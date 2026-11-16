@@ -17,8 +17,9 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
-from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+from flask import Flask, Response, jsonify, redirect, render_template, request, stream_with_context
 
+import auth
 from core import Message, TokenHarbor, TokenHarborError
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -36,6 +37,10 @@ MAX_MESSAGES = 50
 MAX_CONTENT_CHARS = 8000
 
 app = Flask(__name__)
+
+# register the users table, the teardown handler and the auth middleware
+auth.init_db()
+auth.init_app(app)
 
 
 # --- config ---------------------------------------------------------------
@@ -122,15 +127,69 @@ def sse(payload: Dict[str, Any]) -> str:
 
 
 @app.get("/")
-def welcome():
-    """Welcome page: the user enters their name."""
-    return render_template("welcome.html")
+def index():
+    """Send visitors to the login page; it forwards to /chat when signed in."""
+    return redirect("/login")
+
+
+@app.get("/login")
+def login_page():
+    return render_template("login.html")
+
+
+@app.get("/register")
+def register_page():
+    return render_template("register.html")
 
 
 @app.get("/chat")
 def chat():
-    """Chat page; the name is read from localStorage by the browser."""
+    """The chat shell. It holds no data; the browser fetches it with a bearer token."""
     return render_template("chat.html")
+
+
+# --- authentication API ---------------------------------------------------
+
+
+@app.post("/api/auth/register")
+def api_register():
+    data = request.get_json(silent=True) or {}
+    try:
+        user = auth.register_user(
+            data.get("first_name"),
+            data.get("last_name"),
+            data.get("email"),
+            data.get("password"),
+            data.get("confirm_password"),
+        )
+    except auth.AuthError as exc:
+        return jsonify(exc.to_dict()), exc.status
+    return jsonify(auth.auth_payload(user)), 201
+
+
+@app.post("/api/auth/login")
+def api_login():
+    data = request.get_json(silent=True) or {}
+    try:
+        user = auth.authenticate(data.get("email"), data.get("password"))
+    except auth.AuthError as exc:
+        return jsonify(exc.to_dict()), exc.status
+    return jsonify(auth.auth_payload(user))
+
+
+@app.get("/api/auth/me")
+def api_me():
+    claims = auth.current_user() or {}
+    user = auth.get_user_by_id(claims.get("id"))
+    if user is None:
+        return jsonify({"error": {"code": "unauthorized", "message": "Account no longer exists."}}), 401
+    return jsonify({"user": auth.public_user(user)})
+
+
+@app.post("/api/auth/logout")
+def api_logout():
+    # tokens are stateless; the client discards its copy
+    return "", 204
 
 
 # --- API ------------------------------------------------------------------

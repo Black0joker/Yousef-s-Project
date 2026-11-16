@@ -1,16 +1,15 @@
-/* Chat page: streams replies from /api/chat/stream, keeps history in localStorage,
-   and lets you delete a single message. */
+/* Chat page: authenticated streaming chat. The bearer token travels in the
+   Authorization header on every request; history lives in localStorage per user. */
 (function () {
   "use strict";
 
-  var NAME_KEY = "th_chat_name";
-  var HISTORY_KEY = "th_chat_history";
+  var Session = window.Session;
+  if (!Session || !Session.requireSession()) return; // no valid token -> /login
 
-  var NAME = (localStorage.getItem(NAME_KEY) || "").trim();
-  if (!NAME) {
-    window.location.replace("/");
-    return;
-  }
+  var user = Session.getUser() || {};
+  var fullName = (user.full_name || "").trim();
+  var firstName = (user.first_name || "").trim() || fullName.split(" ")[0] || "there";
+  var HISTORY_KEY = "th_chat_history_" + (user.id != null ? user.id : "anon");
 
   var TRASH_ICON =
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" ' +
@@ -30,11 +29,11 @@
   var clearBtn = document.getElementById("clear");
   var statusEl = document.getElementById("status");
   var statusDot = document.getElementById("status-dot");
-  var changeName = document.getElementById("change-name");
+  var logoutBtn = document.getElementById("logout");
 
-  greetingEl.textContent = "Hi, " + NAME;
-  avatarEl.textContent = NAME.charAt(0).toUpperCase();
-  welcomeBubble.textContent = "Welcome, " + NAME + "! Ask me anything to get started.";
+  greetingEl.textContent = "Hi, " + firstName;
+  avatarEl.textContent = firstName.charAt(0).toUpperCase();
+  welcomeBubble.textContent = "Welcome, " + firstName + "! Ask me anything to get started.";
 
   var history = loadHistory();
   history.forEach(function (entry, index) {
@@ -46,6 +45,23 @@
     addUserMessage(entry.content, entry.id, !!next && next.role === "assistant");
   });
   saveHistory(); // persist any ids assigned to older entries
+
+  // confirm the session server-side and refresh the profile from the token claims
+  Session.authFetch("/api/auth/me")
+    .then(function (response) {
+      return response.ok ? response.json() : null;
+    })
+    .then(function (data) {
+      if (!data || !data.user) return;
+      Session.save({ user: data.user });
+      var name = (data.user.first_name || "").trim();
+      if (!name) return;
+      greetingEl.textContent = "Hi, " + name;
+      avatarEl.textContent = name.charAt(0).toUpperCase();
+    })
+    .catch(function () {
+      /* the session guard already handled expired/invalid tokens */
+    });
 
   // --- helpers ------------------------------------------------------------
 
@@ -280,7 +296,7 @@
     var answer = "";
     var streamError = null;
 
-    fetch("/api/chat/stream", {
+    Session.authFetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // ids stay client-side; the API only ever sees role + content
@@ -400,7 +416,9 @@
     input.focus();
   });
 
-  changeName.addEventListener("click", function () {
-    localStorage.removeItem(NAME_KEY); // keep the thread, return to the name form
+  logoutBtn.addEventListener("click", function () {
+    Session.authFetch("/api/auth/logout", { method: "POST" }).catch(function () {});
+    Session.clear();
+    window.location.replace("/login");
   });
 })();

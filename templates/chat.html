@@ -57,7 +57,7 @@
         <div class="flex items-center gap-2 text-sm">
           <div class="flex items-center text-slate-600 dark:text-slate-300 font-medium">
             <span id="greeting">Hi there</span>
-            <a class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 underline cursor-pointer ml-2 font-normal transition-colors" id="change-name" href="/">change name</a>
+            <button class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 underline cursor-pointer ml-2 font-normal transition-colors" id="logout" type="button">log out</button>
           </div>
 
           <div class="h-4 w-[1px] bg-slate-200 dark:bg-slate-700 mx-1 hidden sm:block"></div>
@@ -129,6 +129,7 @@
     </footer>
   </div>
 
+  <script src="{{ url_for('static', filename='session.js') }}"></script>
   <script src="{{ url_for('static', filename='chat.js') }}"></script>
 </body>
 </html>

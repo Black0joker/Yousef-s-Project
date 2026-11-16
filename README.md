@@ -14,22 +14,28 @@ streaming, conversation history, tool calling, and typed error handling.
 
 ```
 .
-├── app.py                 # Flask chat app (welcome + chat + streaming API)
+├── app.py                 # Flask app: pages, auth API, chat API
+├── auth.py                # users, password hashing, JWTs, auth middleware
 ├── templates/
-│   ├── welcome.html       # name form
+│   ├── login.html         # email + password
+│   ├── register.html      # first name, last name, email, password
 │   └── chat.html          # greeting + chat UI
 ├── static/
 │   ├── style.css
-│   ├── welcome.js         # saves the name to localStorage, then goes to /chat
-│   └── chat.js            # streams replies, keeps history in localStorage
+│   ├── theme.js           # pre-paint light/dark bootstrap
+│   ├── session.js         # token storage + fetch wrapper (Bearer header)
+│   ├── auth.js            # login/register form handling
+│   └── chat.js            # streams replies, keeps history per user
 ├── core/
 │   ├── __init__.py        # package exports
 │   └── core.py            # TokenHarbor client, streaming, history, tools
 ├── tests/
+│   ├── test_auth.py       # registration, login, JWT and middleware tests
 │   ├── test_app.py        # Flask app tests (stubbed client, no network)
 │   ├── test_core.py       # client unit tests (local mock gateway, no network)
 │   └── integration/
 │       └── test_integration.py   # live tests against tokenharbor.ai
+├── instance/app.db        # SQLite user database (created at runtime, gitignored)
 ├── requirements.txt
 ├── .env.example           # template for your API key
 ├── .gitignore
@@ -39,10 +45,10 @@ streaming, conversation history, tool calling, and typed error handling.
 ## Requirements
 
 - Python 3.10+
-- `requests` and `python-dotenv`
+- `Flask`, `requests`, `python-dotenv`, `PyJWT`
 
 ```bash
-pip install requests python-dotenv
+pip install -r requirements.txt
 cp .env.example .env      # then paste your real key
 ```
 
@@ -61,16 +67,65 @@ python app.py          # http://127.0.0.1:5000
 
 How it works:
 
-1. **`/`** — welcome page. You enter your name; it is saved in the browser's
-   `localStorage` (not on the server).
-2. **`/chat`** — greets you with your name, then lets you chat. If no name is
-   saved you are sent back to `/`.
-3. **`POST /api/chat/stream`** — the server calls Token Harbor and streams the
+1. **`/`** — redirects to `/login`.
+2. **`/register`** — first name, last name, email and password. Signing up logs
+   you straight in.
+3. **`/login`** — email + password.
+4. **`/chat`** — greets you by your first name and lets you chat; `log out` sits
+   in the header.
+5. **`POST /api/chat/stream`** — the server calls Token Harbor and streams the
    reply back token by token over SSE.
-4. **`POST /api/chat`** — non-streaming fallback returning `{"reply": "..."}`.
+6. **`POST /api/chat`** — non-streaming fallback returning `{"reply": "..."}`.
 
-The browser never sees the API key; all calls go through Flask. The server
-prepends the system prompt so the message sent to the model always looks like:
+## Accounts & authentication
+
+Accounts live in a small SQLite database (`instance/app.db`, override with
+`TH_DB_PATH`). Passwords are hashed with **Werkzeug scrypt** — never stored or
+logged in plain text.
+
+Logging in returns a **JWT** (HS256, 7 days) that the browser keeps in
+`localStorage` and sends on every request as `Authorization: Bearer <token>`:
+
+```json
+{
+  "sub": "1",
+  "id": 1,
+  "email": "youssef@example.com",
+  "full_name": "Youssef Smith",
+  "iat": 1763400000,
+  "exp": 1764004800
+}
+```
+
+| Method | Endpoint | Body | Success |
+| --- | --- | --- | --- |
+| `POST` | `/api/auth/register` | `first_name, last_name, email, password` | `201 {token, expires_at, user}` |
+| `POST` | `/api/auth/login` | `email, password` | `200 {token, expires_at, user}` |
+| `GET` | `/api/auth/me` | – | `200 {user}` |
+| `POST` | `/api/auth/logout` | – | `204` |
+
+Errors: `400 invalid_request`, `400 password_mismatch`, `409 email_taken`,
+`401 invalid_credentials` (one generic message for a wrong email *or* password),
+`401 unauthorized` / `401 token_expired`.
+
+**Middleware.** `auth.init_app(app)` registers a single `before_request` hook
+that verifies the bearer token on every route except the public ones
+(`/login`, `/register`, `/chat`, `/static/*`, and the two auth endpoints). API
+paths get a `401` JSON; page paths get redirected to `/login`.
+
+> Because a browser *navigation* can't carry an `Authorization` header, the
+> `/chat` HTML shell is public and contains no data. Its first action is
+> `GET /api/auth/me`; a `401` clears the token and bounces you to `/login`.
+> Everything with data or side effects goes through the API, which the
+> middleware fully guards.
+
+Chat history stays in the browser, keyed per account
+(`th_chat_history_<user id>`), so two accounts on one browser don't share a
+thread.
+
+The browser never sees the Token Harbor API key; all model calls go through
+Flask. The server prepends the system prompt so the message sent to the model
+always looks like:
 
 ```python
 [
@@ -87,7 +142,7 @@ non-empty content, capped length and message count.
 
 The UI also has:
 
-- **Light / dark mode** — a toggle in the chat header and on the welcome page.
+- **Light / dark mode** — a toggle in the chat header and on the auth pages.
   It follows your OS theme until you pick one, then remembers the choice.
 - **Delete your message** — hover one of *your* messages and click the trash
   icon; it removes that message together with the assistant's reply. `Clear`
@@ -99,10 +154,19 @@ Config (all optional except the key):
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `TH_API_KEY` | — | required; the `thk_live_...` key |
+| `JWT_SECRET` | random per boot | signs login tokens; set it so logins survive a restart |
+| `JWT_TTL_DAYS` | `7` | how long a login lasts |
+| `TH_DB_PATH` | `instance/app.db` | SQLite user database |
 | `TH_MODEL` | `deepseek-v4.1-flash:free` | model used by the web app |
 | `TH_SYSTEM_PROMPT` | built-in text | system prompt injected at index 0 |
 | `PORT` | `5000` | dev server port |
 | `FLASK_DEBUG` | `1` | set to `0` to disable the debug reloader |
+
+Generate a signing key with:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
 
 The sections below describe the `core` client that the app is built on.
 
@@ -259,12 +323,16 @@ status code.
 Two suites:
 
 ```bash
-# unit tests — offline (mock gateway + stubbed client), no key or network
+# unit tests — offline (mock gateway, stubbed client, temp database)
 python -m unittest discover -s tests -v
 
 # integration tests — live calls against tokenharbor.ai (needs TH_API_KEY)
 python -m unittest discover -s tests/integration -v
 ```
+
+The offline suite covers the `core` client, the Flask app, and authentication:
+registration, duplicate/case-insensitive emails, validation, login, JWT claims
+and expiry, the middleware, and the per-message delete/prompt rules.
 
 Integration tests default to the free model `deepseek-v4.1-flash:free` so they
 don't spend your balance. Override with `TH_TEST_MODEL`:
