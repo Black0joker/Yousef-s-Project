@@ -1,14 +1,35 @@
-# `core` — Token Harbor client
+# Youssef's Project
 
-One small module for passing messages to any model on Token Harbor, with
-streaming and conversation history built in.
+A small Python client for [Token Harbor](https://tokenharbor.ai) — one
+OpenAI-compatible gateway for many models. It handles message passing, token
+streaming, conversation history, tool calling, and typed error handling.
 
-- Gateway: `https://tokenharbor.ai/v1` (OpenAI-compatible `/v1/chat/completions`)
-- Auth: universal key `thk_live_...` (read from the environment)
-- Streaming: Server-Sent Events, yielded as an iterator of text deltas
-- Errors: every HTTP status mapped to a clear code, with retries + backoff
+- **Gateway:** `https://tokenharbor.ai/v1` (OpenAI-compatible `/v1/chat/completions`)
+- **Auth:** universal key `thk_live_...`, read from the environment
+- **Streaming:** Server-Sent Events, exposed as an iterator of text deltas
+- **Tools:** `@tool` decorator + automatic tool-calling loop
+- **Errors:** every HTTP status mapped to a clear code, with retries and backoff
 
-## Setup
+## Project layout
+
+```
+.
+├── core/
+│   ├── __init__.py        # package exports
+│   └── core.py            # TokenHarbor client, streaming, history, tools
+├── tests/
+│   ├── test_core.py       # unit tests (local mock gateway, no network)
+│   └── integration/
+│       └── test_integration.py   # live tests against tokenharbor.ai
+├── .env.example           # template for your API key
+├── .gitignore
+└── README.md
+```
+
+## Requirements
+
+- Python 3.10+
+- `requests` and `python-dotenv`
 
 ```bash
 pip install requests python-dotenv
@@ -18,6 +39,8 @@ cp .env.example .env      # then paste your real key
 Get a key at <https://tokenharbor.ai/dashboard/api-keys>. The client reads
 `TH_API_KEY` (falling back to `TOKENHARBOR_API_KEY` / `TOKENHARBOR_KEY`) and
 auto-loads a local `.env` if `python-dotenv` is installed.
+
+> `.env` is gitignored. Never commit your real key.
 
 ## Quick start
 
