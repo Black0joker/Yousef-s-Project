@@ -22,6 +22,8 @@ sys.path.insert(0, str(ROOT))
 _TMPDIR = tempfile.mkdtemp(prefix="th_app_test_")
 os.environ["TH_DB_PATH"] = os.path.join(_TMPDIR, "app.db")
 os.environ["JWT_SECRET"] = "test-secret-do-not-use-in-production"
+# ignore any TH_SYSTEM_PROMPT from the developer's .env so the prompts/ files are used
+os.environ["TH_SYSTEM_PROMPT"] = ""
 
 import app as app_module  # noqa: E402
 import auth  # noqa: E402
@@ -121,6 +123,11 @@ class TestPages(AppTestCase):
         self.assertIn(b"chat.js", response.data)
         self.assertIn(b"session.js", response.data)
 
+    def test_chat_page_has_language_toggle(self):
+        body = self.http.get("/chat").data
+        self.assertIn(b"data-lang-toggle", body)
+        self.assertIn(b'id="lang-label"', body)
+
     def test_pages_have_theme_support(self):
         for path in ("/login", "/register", "/chat"):
             with self.subTest(path=path):
@@ -159,14 +166,61 @@ class TestSystemPrompt(AppTestCase):
 
     def test_system_prompt_can_be_overridden_by_env(self):
         os.environ["TH_SYSTEM_PROMPT"] = "You are a pirate."
-        self.addCleanup(os.environ.pop, "TH_SYSTEM_PROMPT", None)
+        self.addCleanup(os.environ.__setitem__, "TH_SYSTEM_PROMPT", "")
         fake = self.use_client()
         self.http.post(
             "/api/chat",
             json={"messages": [{"role": "user", "content": "hi"}]},
             headers=self.headers,
         )
-        self.assertEqual(fake.payloads[-1][0]["content"], "You are a pirate.")
+        self.assertIn("You are a pirate.", fake.payloads[-1][0]["content"])
+
+    def test_default_prompt_is_the_english_sage_persona(self):
+        self.use_client()
+        response = self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        prompt = app_module.system_prompt("en")
+        self.assertIn("SAGE", prompt)
+        self.assertIn("Always write your entire response in English.", prompt)
+
+    def test_arabic_language_uses_the_arabic_prompt(self):
+        fake = self.use_client()
+        response = self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "مرحبا"}], "language": "ar"},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = fake.payloads[-1]
+        self.assertEqual(payload[0]["role"], "system")
+        self.assertEqual(payload[0]["content"], app_module.system_prompt("ar"))
+        # the Arabic persona document is actually loaded, not the English one
+        self.assertIn("SAGE", payload[0]["content"])
+        self.assertIn("باللغة العربية", payload[0]["content"])
+
+    def test_unknown_language_falls_back_to_english(self):
+        fake = self.use_client()
+        self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hi"}], "language": "klingon"},
+            headers=self.headers,
+        )
+        self.assertEqual(fake.payloads[-1][0]["content"], app_module.system_prompt("en"))
+
+    def test_stream_route_honors_language(self):
+        fake = self.use_client(
+            FakeClient(events=[{"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []}])
+        )
+        self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "hi"}], "language": "ar"},
+            headers=self.headers,
+        )
+        self.assertEqual(fake.payloads[-1][0]["content"], app_module.system_prompt("ar"))
 
     def test_client_supplied_system_message_is_rejected(self):
         # a client cannot smuggle its own system prompt to override index 0

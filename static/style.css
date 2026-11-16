@@ -92,6 +92,22 @@ textarea::-webkit-scrollbar { display: none; }
 .dark #messages::-webkit-scrollbar-thumb { background-color: #334155; }
 .dark #messages::-webkit-scrollbar-thumb:hover { background-color: #475569; }
 
+/* --- Arabic / RTL ------------------------------------------------------- */
+
+/* swap in an Arabic-capable face and a roomier line height */
+body.lang-ar,
+body.lang-ar .font-body,
+body.lang-ar .font-headline,
+body.lang-ar .font-display,
+body.lang-ar .font-label {
+  font-family: "Noto Sans Arabic", "Inter", system-ui, sans-serif;
+}
+
+body.lang-ar { line-height: 1.75; }
+
+/* mirror the send icon so the paper plane points the natural way in RTL */
+[dir="rtl"] #send svg { transform: scaleX(-1); }
+
 @media (prefers-reduced-motion: reduce) {
   .animate-fade-in,
   .animate-pop-in,

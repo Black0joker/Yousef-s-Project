@@ -1,5 +1,5 @@
 <!doctype html>
-<html class="h-full" lang="en">
+<html class="h-full" lang="en" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,7 +10,7 @@
 
   <link href="https://fonts.googleapis.com" rel="preconnect">
   <link crossorigin href="https://fonts.gstatic.com" rel="preconnect">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Public+Sans:wght@500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Public+Sans:wght@500;600&family=Noto+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
 
   <script src="https://cdn.tailwindcss.com"></script>
@@ -64,6 +64,18 @@
 
           <button
             type="button"
+            data-lang-toggle
+            id="lang-toggle"
+            aria-label="Switch language"
+            title="Language"
+            class="h-8 px-2.5 rounded-full flex items-center gap-1 border transition-colors bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/40 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white"
+          >
+            <span class="material-symbols-outlined text-[17px]" aria-hidden="true">language</span>
+            <span id="lang-label" class="text-xs font-semibold">EN</span>
+          </button>
+
+          <button
+            type="button"
             data-theme-toggle
             aria-label="Switch theme"
             title="Theme"
@@ -107,7 +119,7 @@
         <div class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-200/90 dark:border-slate-700 shadow-sm focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500 p-2.5 flex items-end gap-2.5 transition-all">
           <button class="text-xs font-medium text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 px-2.5 py-2 rounded-lg transition-colors flex items-center gap-1 flex-shrink-0" id="clear" title="Clear conversation" type="button">
             <span class="material-symbols-outlined text-base" aria-hidden="true">ink_eraser</span>
-            <span class="hidden sm:inline">Clear</span>
+            <span class="hidden sm:inline" id="clear-label">Clear</span>
           </button>
 
           <textarea class="resize-none text-[15px] leading-relaxed text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 bg-transparent flex-1 border-0 focus:outline-none py-1.5 max-h-36 overflow-y-auto" id="input" placeholder="Type a message…  (Enter to send, Shift+Enter for a new line)" rows="1" autofocus></textarea>

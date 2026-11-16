@@ -26,6 +26,9 @@ streaming, conversation history, tool calling, and typed error handling.
 │   ├── session.js         # token storage + fetch wrapper (Bearer header)
 │   ├── auth.js            # login/register form handling
 │   └── chat.js            # streams replies, keeps history per user
+├── prompts/
+│   ├── english.md         # SAGE system prompt (English)
+│   └── arabic.md          # SAGE system prompt (Arabic)
 ├── core/
 │   ├── __init__.py        # package exports
 │   └── core.py            # TokenHarbor client, streaming, history, tools
@@ -140,7 +143,26 @@ A client-supplied `system` message is rejected (400), so the prompt at index 0
 can't be overridden. Requests are also validated: only `user`/`assistant` roles,
 non-empty content, capped length and message count.
 
+The system prompt comes from the SAGE persona documents in `prompts/`
+(`english.md` / `arabic.md`). The client picks one per request with a `language`
+field (`"en"` or `"ar"`; anything else falls back to English), and the server
+appends a directive forcing the reply language. `TH_SYSTEM_PROMPT` overrides the
+persona for every language. A missing prompt file falls back to a short built-in
+string, so the app still runs without `prompts/`.
+
+```jsonc
+// POST /api/chat  (and /api/chat/stream)
+{
+  "messages": [{"role": "user", "content": "..."}],
+  "language": "ar"          // optional; "en" (default) or "ar"
+}
+```
+
 The UI also has:
+
+- **English / Arabic** — a toggle in the chat header. It selects the matching
+  SAGE prompt, translates the visible UI, and flips the chat to right-to-left for
+  Arabic (`<html dir="rtl">`). The choice is remembered per browser.
 
 - **Light / dark mode** — a toggle in the chat header and on the auth pages.
   It follows your OS theme until you pick one, then remembers the choice.
@@ -158,7 +180,7 @@ Config (all optional except the key):
 | `JWT_TTL_DAYS` | `7` | how long a login lasts |
 | `TH_DB_PATH` | `instance/app.db` | SQLite user database |
 | `TH_MODEL` | `deepseek-v4.1-flash:free` | model used by the web app |
-| `TH_SYSTEM_PROMPT` | built-in text | system prompt injected at index 0 |
+| `TH_SYSTEM_PROMPT` | — | optional persona override applied to every language; unset uses `prompts/*.md` |
 | `PORT` | `5000` | dev server port |
 | `FLASK_DEBUG` | `1` | set to `0` to disable the debug reloader |
 

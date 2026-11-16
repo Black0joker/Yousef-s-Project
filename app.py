@@ -36,6 +36,33 @@ ALLOWED_ROLES = ("user", "assistant")
 MAX_MESSAGES = 50
 MAX_CONTENT_CHARS = 8000
 
+# --- prompts --------------------------------------------------------------
+
+#: Where the SAGE persona documents live (next to this module).
+PROMPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts")
+
+#: Prompt file per supported language. ``language`` indexes this fixed map, so a
+#: client-supplied value can never reach the filesystem directly.
+LANGUAGE_FILES = {"en": "english.md", "ar": "arabic.md"}
+DEFAULT_LANGUAGE = "en"
+
+#: Accepted spellings for each language (lowercased).
+LANGUAGE_ALIASES = {
+    "en": "en",
+    "eng": "en",
+    "english": "en",
+    "ar": "ar",
+    "ara": "ar",
+    "arabic": "ar",
+}
+
+#: Appended to the persona so the language toggle actually forces the reply
+#: language, even when the user writes in the other language.
+LANGUAGE_DIRECTIVES = {
+    "en": "Always write your entire response in English.",
+    "ar": "يجب أن تكون جميع ردودك باللغة العربية.",
+}
+
 app = Flask(__name__)
 
 # register the users table, the teardown handler and the auth middleware
@@ -51,9 +78,44 @@ def model_name() -> str:
     return os.environ.get("TH_MODEL", "").strip() or DEFAULT_WEB_MODEL
 
 
-def system_prompt() -> str:
-    """System prompt, overridable with ``TH_SYSTEM_PROMPT``."""
-    return os.environ.get("TH_SYSTEM_PROMPT", "").strip() or DEFAULT_SYSTEM_PROMPT
+def normalize_language(value: Any) -> str:
+    """Map a client-supplied language to a supported code, else the default."""
+    if isinstance(value, str):
+        code = LANGUAGE_ALIASES.get(value.strip().lower())
+        if code:
+            return code
+    return DEFAULT_LANGUAGE
+
+
+def read_prompt(language: str) -> str:
+    """SAGE prompt file for ``language``, read fresh on every call.
+
+    Reading per request means editing a ``prompts/*.md`` file takes effect
+    without a restart. A missing or empty file falls back to the built-in text.
+    """
+    filename = LANGUAGE_FILES.get(language)
+    if not filename:
+        return DEFAULT_SYSTEM_PROMPT
+    try:
+        with open(os.path.join(PROMPTS_DIR, filename), encoding="utf-8") as handle:
+            content = handle.read().strip()
+    except OSError:
+        return DEFAULT_SYSTEM_PROMPT
+    return content or DEFAULT_SYSTEM_PROMPT
+
+
+def system_prompt(language: str = DEFAULT_LANGUAGE) -> str:
+    """System prompt for ``language``.
+
+    ``TH_SYSTEM_PROMPT`` overrides the persona for every language; otherwise the
+    matching ``prompts/*.md`` document is used. A language directive is appended
+    so the model replies in the selected language.
+    """
+    code = normalize_language(language)
+    override = os.environ.get("TH_SYSTEM_PROMPT", "").strip()
+    base = override or read_prompt(code)
+    directive = LANGUAGE_DIRECTIVES[code]
+    return f"{base}\n\n{directive}"
 
 
 _client: Optional[TokenHarbor] = None
@@ -100,9 +162,9 @@ def normalize_messages(raw: Any) -> List[Message]:
     return cleaned
 
 
-def build_payload(raw: Any) -> List[Message]:
-    """Conversation with the system prompt inserted at index 0."""
-    return [{"role": "system", "content": system_prompt()}] + normalize_messages(raw)
+def build_payload(raw: Any, language: str = DEFAULT_LANGUAGE) -> List[Message]:
+    """Conversation with the system prompt for ``language`` inserted at index 0."""
+    return [{"role": "system", "content": system_prompt(language)}] + normalize_messages(raw)
 
 
 def error_body(exc: TokenHarborError) -> Dict[str, Any]:
@@ -200,7 +262,7 @@ def api_chat():
     """Non-streaming completion: returns ``{"reply": "..."}``."""
     data = request.get_json(silent=True) or {}
     try:
-        payload = build_payload(data.get("messages"))
+        payload = build_payload(data.get("messages"), data.get("language"))
     except ValueError as exc:
         return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
 
@@ -222,7 +284,7 @@ def api_chat_stream():
     """Streamed completion over Server-Sent Events."""
     data = request.get_json(silent=True) or {}
     try:
-        payload = build_payload(data.get("messages"))
+        payload = build_payload(data.get("messages"), data.get("language"))
     except ValueError as exc:
         return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
 

@@ -11,6 +11,67 @@
   var firstName = (user.first_name || "").trim() || fullName.split(" ")[0] || "there";
   var HISTORY_KEY = "th_chat_history_" + (user.id != null ? user.id : "anon");
 
+  // --- language ------------------------------------------------------------
+
+  var LANG_KEY = "th_language";
+  var LANG_ALIASES = { en: "en", eng: "en", english: "en", ar: "ar", ara: "ar", arabic: "ar" };
+
+  // UI strings per language; the system prompt on the server follows the same code.
+  var STRINGS = {
+    en: {
+      code: "EN",
+      greeting: function (name) { return "Hi, " + name; },
+      welcome: function (name) { return "Welcome, " + name + "! Ask me anything to get started."; },
+      logout: "log out",
+      clear: "Clear",
+      placeholder: "Type a message...  (Enter to send, Shift+Enter for a new line)",
+      thinking: "Thinking…",
+      noResponse: "(no response)",
+      toggleLang: "Switch language",
+      deleteReply: "Delete this message and its reply",
+      deleteOne: "Delete this message",
+    },
+    ar: {
+      code: "AR",
+      greeting: function (name) { return "مرحبًا، " + name; },
+      welcome: function (name) { return "أهلًا بك يا " + name + "! اسألني أي شيء للبدء."; },
+      logout: "تسجيل الخروج",
+      clear: "مسح",
+      placeholder: "اكتب رسالة...  (Enter للإرسال، Shift+Enter لسطر جديد)",
+      thinking: "جارٍ التفكير...",
+      noResponse: "(لا يوجد رد)",
+      toggleLang: "تغيير اللغة",
+      deleteReply: "احذف هذه الرسالة وردها",
+      deleteOne: "احذف هذه الرسالة",
+    },
+  };
+
+  function normalizeLang(value) {
+    return LANG_ALIASES[String(value || "").trim().toLowerCase()] || "en";
+  }
+
+  function loadLanguage() {
+    try {
+      return normalizeLang(localStorage.getItem(LANG_KEY));
+    } catch (err) {
+      return "en";
+    }
+  }
+
+  function saveLanguage() {
+    try {
+      localStorage.setItem(LANG_KEY, lang);
+    } catch (err) {
+      /* storage blocked; the choice lasts for this session */
+    }
+  }
+
+  function str() {
+    return STRINGS[lang] || STRINGS.en;
+  }
+
+  var lang = loadLanguage();
+
   var TRASH_ICON =
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" ' +
     'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
@@ -30,10 +91,11 @@
   var statusEl = document.getElementById("status");
   var statusDot = document.getElementById("status-dot");
   var logoutBtn = document.getElementById("logout");
+  var clearLabel = document.getElementById("clear-label");
+  var langToggle = document.getElementById("lang-toggle");
+  var langLabel = document.getElementById("lang-label");
 
-  greetingEl.textContent = "Hi, " + firstName;
-  avatarEl.textContent = firstName.charAt(0).toUpperCase();
-  welcomeBubble.textContent = "Welcome, " + firstName + "! Ask me anything to get started.";
+  applyLanguage();
 
   var history = loadHistory();
   history.forEach(function (entry, index) {
@@ -56,7 +118,7 @@
       Session.save({ user: data.user });
       var name = (data.user.first_name || "").trim();
       if (!name) return;
-      greetingEl.textContent = "Hi, " + name;
+      greetingEl.textContent = str().greeting(name);
       avatarEl.textContent = name.charAt(0).toUpperCase();
     })
     .catch(function () {
@@ -64,6 +126,27 @@
     });
 
   // --- helpers ------------------------------------------------------------
+
+  // applies the selected language to the static UI and the document direction
+  function applyLanguage() {
+    var strings = str();
+
+    document.documentElement.lang = lang;
+    document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
+    document.body.classList.toggle("lang-ar", lang === "ar");
+
+    greetingEl.textContent = strings.greeting(firstName);
+    avatarEl.textContent = firstName.charAt(0).toUpperCase();
+    welcomeBubble.textContent = strings.welcome(firstName);
+    logoutBtn.textContent = strings.logout;
+    if (clearLabel) clearLabel.textContent = strings.clear;
+    input.setAttribute("placeholder", strings.placeholder);
+    if (langLabel) langLabel.textContent = strings.code;
+    if (langToggle) {
+      langToggle.setAttribute("aria-label", strings.toggleLang);
+      langToggle.setAttribute("title", strings.toggleLang);
+    }
+  }
 
   function el(tag, className, text) {
     var node = document.createElement(tag);
@@ -132,14 +215,14 @@
     );
     button.type = "button";
     button.setAttribute("data-delete-msg", id);
-    button.setAttribute("aria-label", "Delete this message");
-    button.title = withReply ? "Delete this message and its reply" : "Delete this message";
+    button.setAttribute("aria-label", str().deleteOne);
+    button.title = withReply ? str().deleteReply : str().deleteOne;
     button.innerHTML = TRASH_ICON;
     return button;
   }
 
   function addUserMessage(text, id, withReply) {
-    var row = el("div", "flex items-start justify-end gap-3 max-w-[85%] ml-auto group animate-fade-in");
+    var row = el("div", "flex items-start justify-end gap-3 max-w-[85%] ms-auto group animate-fade-in");
     row.setAttribute("data-msg-id", id);
 
     var col = el("div", "flex flex-col items-end");
@@ -150,7 +233,7 @@
       text
     );
 
-    var meta = el("div", "flex items-center gap-1.5 mt-1.5 mr-1");
+    var meta = el("div", "flex items-center gap-1.5 mt-1.5 me-1");
     meta.appendChild(timeLabel());
     meta.appendChild(deleteButton(id, withReply));
 
@@ -190,7 +273,7 @@
 
     // assistant messages are only ever removed together with the question that
     // produced them, so they carry no delete button of their own
-    var meta = el("div", "flex items-center gap-1.5 mt-1.5 ml-1");
+    var meta = el("div", "flex items-center gap-1.5 mt-1.5 ms-1");
     meta.appendChild(timeLabel());
 
     col.appendChild(bubble);
@@ -228,7 +311,7 @@
   function setBusy(busy) {
     sendBtn.disabled = busy;
     input.disabled = busy;
-    statusEl.textContent = busy ? "Thinking…" : "";
+    statusEl.textContent = busy ? str().thinking : "";
     statusDot.style.display = busy ? "inline-block" : "none";
     if (!busy) input.focus();
   }
@@ -304,6 +387,7 @@
         messages: history.map(function (m) {
           return { role: m.role, content: m.content };
         }),
+        language: lang,
       }),
     })
       .then(function (response) {
@@ -330,7 +414,7 @@
         parts.bubble.classList.remove("is-streaming");
         if (streamError) throw new Error(errorText({ error: streamError }, 0));
         if (!answer.trim()) {
-          parts.bubble.textContent = "(no response)";
+          parts.bubble.textContent = str().noResponse;
         }
         assistantEntry.content = answer;
         history.push(assistantEntry);
@@ -415,6 +499,14 @@
     statusDot.style.display = "none";
     input.focus();
   });
+
+  if (langToggle) {
+    langToggle.addEventListener("click", function () {
+      lang = lang === "ar" ? "en" : "ar";
+      saveLanguage();
+      applyLanguage();
+    });
+  }
 
   logoutBtn.addEventListener("click", function () {
     Session.authFetch("/api/auth/logout", { method: "POST" }).catch(function () {});
