@@ -14,13 +14,23 @@ streaming, conversation history, tool calling, and typed error handling.
 
 ```
 .
+├── app.py                 # Flask chat app (welcome + chat + streaming API)
+├── templates/
+│   ├── welcome.html       # name form
+│   └── chat.html          # greeting + chat UI
+├── static/
+│   ├── style.css
+│   ├── welcome.js         # saves the name to localStorage, then goes to /chat
+│   └── chat.js            # streams replies, keeps history in localStorage
 ├── core/
 │   ├── __init__.py        # package exports
 │   └── core.py            # TokenHarbor client, streaming, history, tools
 ├── tests/
-│   ├── test_core.py       # unit tests (local mock gateway, no network)
+│   ├── test_app.py        # Flask app tests (stubbed client, no network)
+│   ├── test_core.py       # client unit tests (local mock gateway, no network)
 │   └── integration/
 │       └── test_integration.py   # live tests against tokenharbor.ai
+├── requirements.txt
 ├── .env.example           # template for your API key
 ├── .gitignore
 └── README.md
@@ -41,6 +51,60 @@ Get a key at <https://tokenharbor.ai/dashboard/api-keys>. The client reads
 auto-loads a local `.env` if `python-dotenv` is installed.
 
 > `.env` is gitignored. Never commit your real key.
+
+## Web app (Flask chat)
+
+```bash
+pip install -r requirements.txt
+python app.py          # http://127.0.0.1:5000
+```
+
+How it works:
+
+1. **`/`** — welcome page. You enter your name; it is saved in the browser's
+   `localStorage` (not on the server).
+2. **`/chat`** — greets you with your name, then lets you chat. If no name is
+   saved you are sent back to `/`.
+3. **`POST /api/chat/stream`** — the server calls Token Harbor and streams the
+   reply back token by token over SSE.
+4. **`POST /api/chat`** — non-streaming fallback returning `{"reply": "..."}`.
+
+The browser never sees the API key; all calls go through Flask. The server
+prepends the system prompt so the message sent to the model always looks like:
+
+```python
+[
+  {"role": "system", "content": SYSTEM_PROMPT},   # always index 0
+  {"role": "user", "content": "..."},
+  {"role": "assistant", "content": "..."},
+  ...
+]
+```
+
+A client-supplied `system` message is rejected (400), so the prompt at index 0
+can't be overridden. Requests are also validated: only `user`/`assistant` roles,
+non-empty content, capped length and message count.
+
+The UI also has:
+
+- **Light / dark mode** — a toggle in the chat header and on the welcome page.
+  It follows your OS theme until you pick one, then remembers the choice.
+- **Delete your message** — hover one of *your* messages and click the trash
+  icon; it removes that message together with the assistant's reply. `Clear`
+  wipes the whole conversation. Message ids stay in the browser, so the API only
+  ever receives `role` and `content`.
+
+Config (all optional except the key):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TH_API_KEY` | — | required; the `thk_live_...` key |
+| `TH_MODEL` | `deepseek-v4.1-flash:free` | model used by the web app |
+| `TH_SYSTEM_PROMPT` | built-in text | system prompt injected at index 0 |
+| `PORT` | `5000` | dev server port |
+| `FLASK_DEBUG` | `1` | set to `0` to disable the debug reloader |
+
+The sections below describe the `core` client that the app is built on.
 
 ## Quick start
 
@@ -195,7 +259,7 @@ status code.
 Two suites:
 
 ```bash
-# unit tests — local mock gateway, no key or network needed
+# unit tests — offline (mock gateway + stubbed client), no key or network
 python -m unittest discover -s tests -v
 
 # integration tests — live calls against tokenharbor.ai (needs TH_API_KEY)

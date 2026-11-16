@@ -243,6 +243,25 @@ def _normalize_messages(messages: Any) -> List[Message]:
     return [dict(m) for m in messages]
 
 
+def _close_hard(response: Any) -> None:
+    """Fully close a response's socket.
+
+    ``requests.Response.close()`` only calls ``raw.close()`` when the body was
+    not consumed; otherwise it releases the connection back to the pool, which
+    keeps the socket open. On an error path we want it gone.
+    """
+    raw = getattr(response, "raw", None)
+    if raw is not None:
+        try:
+            raw.close()
+        except Exception:
+            pass
+    try:
+        response.close()
+    except Exception:
+        pass
+
+
 # --- tool schema helpers --------------------------------------------------
 
 _JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean", list: "array", dict: "object"}
@@ -555,6 +574,7 @@ class TokenHarbor:
 
             error = self._error_from_response(response)
             retry_after = self._retry_after(response)
+            _close_hard(response)  # .body already holds the payload; drop the socket
             if response.status_code in RETRYABLE_STATUS and attempt < self.max_retries:
                 last_error = error
                 self._sleep_backoff(attempt, retry_after)

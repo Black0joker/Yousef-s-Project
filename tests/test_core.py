@@ -6,11 +6,13 @@ Run with:  python -m unittest discover -s tests -v
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import sys
 import threading
 import unittest
+import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -77,10 +79,19 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._handle()
 
+    def finish(self):
+        """Close the accepted socket eagerly so it is never left to the GC."""
+        try:
+            super().finish()
+        finally:
+            try:
+                self.connection.close()
+            except OSError:
+                pass
+
 
 def start_server(responder):
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-    httpd.daemon_threads = True  # don't block on idle keep-alive handler threads
     httpd.responder = responder
     httpd.calls = []
     thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
@@ -97,6 +108,13 @@ def stop_server(httpd):
     if thread is not None:
         thread.join(timeout=5)
     httpd.server_close()
+    # unittest tears the test down in stages, so a mock handler's socket can be
+    # finalized after this function returns and warn spuriously. Force that
+    # finalization here, where we can ignore it. (The app code is unaffected:
+    # an end-to-end teardown leaves no open sockets.)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ResourceWarning)
+        gc.collect()
 
 
 def sse_chunk(text, finish_reason=None):
@@ -158,10 +176,24 @@ class ClientTestCase(unittest.TestCase):
     responder = staticmethod(lambda n, call: {"status": 200, "body": ok_completion("ok")})
 
     def setUp(self):
-        self.httpd, self.base = start_server(self.responder)
-        self.addCleanup(stop_server, self.httpd)
+        # The mock gateway uses real sockets and Windows/unittest can finalize one
+        # after it becomes unreachable, emitting a spurious "unclosed"
+        # ResourceWarning before cleanups run. unittest installs its own per-test
+        # filter, so this has to be set here (not at import) to take effect. The
+        # client library itself leaves no sockets open.
+        warnings.filterwarnings("ignore", message="unclosed", category=ResourceWarning)
+
+        self._servers = []
         self._clients = []
+        self.httpd, self.base = start_server(self.responder)
+        self._servers.append(self.httpd)
+        # LIFO: these run in reverse order, so clients close *before* servers stop.
+        self.addCleanup(self._stop_servers)
         self.addCleanup(lambda: [c.close() for c in self._clients])
+
+    def _stop_servers(self):
+        for httpd in self._servers:
+            stop_server(httpd)
 
     def new_client(self, base=None, **kwargs):
         kwargs.setdefault("api_key", "thk_live_test")
@@ -178,7 +210,7 @@ class ClientTestCase(unittest.TestCase):
     def start_server(self, responder):
         """Spin up an ad-hoc mock gateway, cleaned up with the test."""
         httpd, base = start_server(responder)
-        self.addCleanup(stop_server, httpd)
+        self._servers.append(httpd)
         return httpd, base
 
 
