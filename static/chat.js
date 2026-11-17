@@ -25,6 +25,7 @@
       logout: "log out",
       clear: "Clear",
       placeholder: "Type a message...  (Enter to send, Shift+Enter for a new line)",
+      placeholderShort: "Type a message…",
       thinking: "Thinking…",
       noResponse: "(no response)",
       toggleLang: "Switch language",
@@ -44,6 +45,7 @@
       logout: "تسجيل الخروج",
       clear: "مسح",
       placeholder: "اكتب رسالة...  (Enter للإرسال، Shift+Enter لسطر جديد)",
+      placeholderShort: "اكتب رسالة…",
       thinking: "جارٍ التفكير...",
       noResponse: "(لا يوجد رد)",
       toggleLang: "تغيير اللغة",
@@ -116,6 +118,7 @@
   var statusEl = document.getElementById("status");
   var statusDot = document.getElementById("status-dot");
   var logoutBtn = document.getElementById("logout");
+  var logoutLabel = document.getElementById("logout-label") || logoutBtn;
   var clearLabel = document.getElementById("clear-label");
   var langToggle = document.getElementById("lang-toggle");
   var langLabel = document.getElementById("lang-label");
@@ -163,9 +166,10 @@
     greetingEl.textContent = strings.greeting(firstName);
     avatarEl.textContent = firstName.charAt(0).toUpperCase();
     welcomeBubble.textContent = strings.welcome(firstName);
-    logoutBtn.textContent = strings.logout;
+    logoutLabel.textContent = strings.logout;
     if (clearLabel) clearLabel.textContent = strings.clear;
-    input.setAttribute("placeholder", strings.placeholder);
+    input.setAttribute("placeholder", strings.placeholderShort || strings.placeholder);
+    input.title = strings.placeholder;
     if (langLabel) langLabel.textContent = strings.code;
     if (langToggle) {
       langToggle.setAttribute("aria-label", strings.toggleLang);
@@ -228,15 +232,17 @@
   // --- message rendering --------------------------------------------------
 
   function timeLabel() {
-    return el("span", "text-xs text-slate-400 font-label dark:text-slate-500", now());
+    var label = el("span", "chat-time", now());
+    label.setAttribute("dir", "ltr");
+    return label;
   }
 
   function deleteButton(id, withReply) {
     var button = el(
       "button",
       "delete-btn opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity p-1 rounded " +
-        "text-slate-400 hover:text-red-600 focus:text-red-600 " +
-        "dark:text-slate-500 dark:hover:text-red-400 dark:focus:text-red-400"
+        "text-brand-400 hover:text-red-600 focus:text-red-600 " +
+        "dark:text-sand-500 dark:hover:text-red-400 dark:focus:text-red-400"
     );
     button.type = "button";
     button.setAttribute("data-delete-msg", id);
@@ -247,18 +253,14 @@
   }
 
   function addUserMessage(text, id, withReply) {
-    var row = el("div", "flex items-start justify-end gap-3 max-w-[85%] ms-auto group animate-fade-in");
+    var row = el("div", "chat-row chat-row--user group animate-fade-in");
     row.setAttribute("data-msg-id", id);
 
-    var col = el("div", "flex flex-col items-end");
-    var bubble = el(
-      "div",
-      "bg-[#2563eb] text-white px-4 py-3 rounded-[16px] rounded-br-[4px] text-[15px] leading-relaxed " +
-        "shadow-sm whitespace-pre-wrap break-words selection:bg-blue-800 dark:bg-blue-600",
-      text
-    );
+    var col = el("div", "chat-col chat-col--user");
+    var bubble = el("div", "bubble bubble--user", text);
+    bubble.setAttribute("dir", "auto");
 
-    var meta = el("div", "flex items-center gap-1.5 mt-1.5 me-1");
+    var meta = el("div", "chat-meta");
     meta.appendChild(timeLabel());
     meta.appendChild(deleteButton(id, withReply));
 
@@ -277,32 +279,25 @@
   }
 
   function createAssistantMessage(id) {
-    var row = el("div", "flex items-start gap-3 max-w-[85%] group animate-fade-in");
+    var row = el("div", "chat-row group animate-fade-in");
     row.setAttribute("data-msg-id", id);
 
-    var avatar = el(
-      "div",
-      "w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 text-white flex-shrink-0 " +
-        "flex items-center justify-center shadow-sm mt-0.5"
-    );
-    var icon = el("span", "material-symbols-outlined text-[16px]", "smart_toy");
+    var avatar = el("div", "chat-avatar");
+    var icon = el("span", "material-symbols-outlined text-[16px]", "spa");
     icon.setAttribute("aria-hidden", "true");
     avatar.appendChild(icon);
 
-    var col = el("div", "flex flex-col");
-    var bubble = el(
-      "div",
-      "bg-[#eef1f5] text-[#1e293b] px-4 py-3 rounded-[16px] rounded-bl-[4px] text-[15px] leading-relaxed " +
-        "shadow-sm whitespace-pre-wrap break-words dark:bg-slate-800 dark:text-slate-100"
-    );
+    var col = el("div", "chat-col");
+    var bubble = el("div", "bubble bubble--assistant");
+    bubble.setAttribute("dir", "auto");
 
     // assistant messages are only ever removed together with the question that
     // produced them, so they carry no delete button of their own
-    var meta = el("div", "flex items-center gap-1.5 mt-1.5 ms-1");
+    var meta = el("div", "chat-meta");
     meta.appendChild(timeLabel());
 
     // transient tool activity; never written to chat history
-    var activity = el("div", "mt-1.5 ms-1 text-xs font-label text-slate-400 dark:text-slate-500");
+    var activity = el("div", "chat-activity");
     activity.setAttribute("role", "status");
     activity.setAttribute("aria-live", "polite");
     activity.hidden = true;
@@ -331,10 +326,7 @@
     var button = row.querySelector("[data-delete-msg]");
     if (button) button.remove();
 
-    bubble.className =
-      "bg-red-50 text-red-700 border border-red-200 px-4 py-3 rounded-[16px] rounded-bl-[4px] " +
-      "text-[15px] leading-relaxed shadow-sm whitespace-pre-wrap break-words " +
-      "dark:bg-red-950/40 dark:text-red-300 dark:border-red-900/70";
+    bubble.className = "bubble bubble--assistant bubble--error";
     bubble.textContent = "⚠️ " + message;
   }
 
