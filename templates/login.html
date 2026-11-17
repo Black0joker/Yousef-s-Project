@@ -11,6 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..600,0..1,0&display=swap" rel="stylesheet">
 
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -19,119 +20,161 @@
       theme: {
         extend: {
           fontFamily: {
-            sans: ['Inter', 'sans-serif'],
-            heading: ['Plus Jakarta Sans', 'sans-serif'],
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            heading: ['Plus Jakarta Sans', 'system-ui', 'sans-serif'],
           },
           colors: {
             brand: {
-              50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 500: '#3b82f6',
-              600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af',
-            }
+              50: '#eef5f1', 100: '#dbe5e0', 200: '#b9ede0', 300: '#9ed1c4',
+              400: '#7ca89b', 500: '#5b8f7a', 600: '#3b665b', 700: '#1c4f45',
+              800: '#143f36', 900: '#0f3d33', 950: '#00261e',
+            },
+            sand: {
+              50: '#faf9f5', 100: '#f5f4f0', 200: '#e3e2df', 300: '#d8d6d1',
+              400: '#b6b4ae', 500: '#8a8883',
+            },
           },
           boxShadow: {
-            'subtle-elevated': '0 20px 40px -15px rgba(37, 99, 235, 0.07), 0 1px 3px 0 rgba(0, 0, 0, 0.05)',
-          }
-        }
-      }
+            card: '0 30px 60px -30px rgba(15, 61, 51, 0.22), 0 2px 6px rgba(15, 61, 51, 0.05)',
+          },
+        },
+      },
     }
   </script>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body class="min-h-full flex items-center justify-center p-4 sm:p-6 bg-gradient-to-br from-slate-50 via-blue-50/40 to-indigo-50/50 text-slate-800 antialiased selection:bg-brand-100 selection:text-brand-800 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 dark:text-slate-200 dark:selection:bg-brand-800 dark:selection:text-brand-100">
+<body class="min-h-full bg-sand-50 font-sans text-brand-950 antialiased selection:bg-brand-200 selection:text-brand-950 dark:bg-[#0b1512] dark:text-sand-100 dark:selection:bg-brand-700 dark:selection:text-white">
 
   <button
     type="button"
     data-theme-toggle
     aria-label="Switch theme"
     title="Theme"
-    class="fixed top-4 right-4 sm:top-6 sm:right-6 z-50 w-9 h-9 rounded-full flex items-center justify-center border transition-colors bg-white/80 border-slate-200 text-slate-600 hover:bg-white hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-600/40 dark:bg-slate-900/80 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
+    class="fixed top-4 right-4 z-50 flex h-9 w-9 items-center justify-center rounded-full border border-sand-200 bg-white/80 text-brand-600 transition-colors hover:bg-white hover:text-brand-900 focus:outline-none focus:ring-2 focus:ring-brand-600/30 dark:border-white/10 dark:bg-white/5 dark:text-sand-300 dark:hover:bg-white/10 dark:hover:text-white sm:top-6 sm:right-6"
   >
-    <svg data-theme-icon="to-dark" xmlns="http://www.w3.org/2000/svg" class="hidden w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <svg data-theme-icon="to-dark" xmlns="http://www.w3.org/2000/svg" class="hidden h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
     </svg>
-    <svg data-theme-icon="to-light" xmlns="http://www.w3.org/2000/svg" class="hidden w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <svg data-theme-icon="to-light" xmlns="http://www.w3.org/2000/svg" class="hidden h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="4"></circle>
       <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
     </svg>
   </button>
 
-  <div class="fixed inset-0 overflow-hidden pointer-events-none -z-10 flex items-center justify-center">
-    <div class="w-[600px] h-[600px] bg-blue-400/10 dark:bg-blue-500/10 rounded-full blur-3xl transform -translate-y-12"></div>
-    <div class="w-[500px] h-[500px] bg-indigo-300/10 dark:bg-indigo-500/10 rounded-full blur-3xl transform translate-x-32 translate-y-24"></div>
-  </div>
+  <main class="flex min-h-screen w-full items-center justify-center p-4 sm:p-8">
+    <div class="grid w-full max-w-[1080px] overflow-hidden rounded-[28px] border border-sand-200/80 bg-white shadow-card animate-pop-in dark:border-white/5 dark:bg-[#111b17] md:grid-cols-[1.05fr_1fr]">
 
-  <main class="w-full max-w-[420px]">
-    <div class="bg-white/95 dark:bg-slate-900/80 backdrop-blur-sm rounded-[16px] border border-slate-200/80 dark:border-slate-800 p-8 shadow-subtle-elevated dark:shadow-none animate-pop-in">
+      <!-- Brand panel -->
+      <section class="relative hidden flex-col justify-between gap-10 overflow-hidden bg-brand-900 p-10 text-brand-100 md:flex lg:p-12">
+        <div class="pointer-events-none absolute -top-24 -right-16 h-[360px] w-[360px] rounded-full bg-brand-400/20 blur-3xl"></div>
+        <div class="pointer-events-none absolute -bottom-32 -left-20 h-[320px] w-[320px] rounded-full bg-brand-200/10 blur-3xl"></div>
 
-      <div class="flex items-center justify-center mb-6">
-        <div class="w-12 h-12 rounded-2xl bg-brand-50 dark:bg-brand-600/15 border border-brand-100 dark:border-brand-600/30 flex items-center justify-center text-brand-600 dark:text-brand-500 shadow-sm">
-          <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-            <path d="M8 10h.01M12 10h.01M16 10h.01" stroke-width="2.5"></path>
-          </svg>
+        <div class="relative flex items-center gap-3">
+          <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/15">
+            <span class="material-symbols-outlined text-[20px] text-brand-200" aria-hidden="true">spa</span>
+          </span>
+          <span class="font-heading text-lg font-extrabold tracking-[0.18em] text-white">SAGE</span>
         </div>
-      </div>
 
-      <div class="text-center mb-7">
-        <h1 class="text-2xl sm:text-[26px] font-extrabold text-slate-900 dark:text-white tracking-tight font-heading mb-2">
+        <div class="relative">
+          <h2 class="font-heading text-[32px] font-extrabold leading-[1.15] text-white lg:text-[36px]">
+            Smart Assistance,<br>Guidance &amp; Ease.
+          </h2>
+          <p class="mt-4 max-w-sm text-sm leading-relaxed text-brand-100/75">
+            A quieter assistant that remembers what matters, speaks your language, and keeps your details inside your account.
+          </p>
+
+          <ul class="mt-9 space-y-5 text-sm">
+            <li class="flex items-start gap-3">
+              <span class="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-white/8 ring-1 ring-white/10">
+                <span class="material-symbols-outlined text-[17px] text-brand-200" aria-hidden="true">bookmark</span>
+              </span>
+              <span>
+                <span class="block font-semibold text-white">Remembers what matters</span>
+                <span class="mt-0.5 block text-xs leading-relaxed text-brand-100/60">People, dates and preferences you choose to save.</span>
+              </span>
+            </li>
+            <li class="flex items-start gap-3">
+              <span class="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-white/8 ring-1 ring-white/10">
+                <span class="material-symbols-outlined text-[17px] text-brand-200" aria-hidden="true">translate</span>
+              </span>
+              <span>
+                <span class="block font-semibold text-white">Speaks English &amp; Arabic</span>
+                <span class="mt-0.5 block text-xs leading-relaxed text-brand-100/60">Switch language anytime; the layout follows.</span>
+              </span>
+            </li>
+            <li class="flex items-start gap-3">
+              <span class="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-white/8 ring-1 ring-white/10">
+                <span class="material-symbols-outlined text-[17px] text-brand-200" aria-hidden="true">shield</span>
+              </span>
+              <span>
+                <span class="block font-semibold text-white">Private by design</span>
+                <span class="mt-0.5 block text-xs leading-relaxed text-brand-100/60">Your memory is scoped to your account, always.</span>
+              </span>
+            </li>
+          </ul>
+        </div>
+
+        <p class="relative text-xs text-brand-200/55">Your data stays in your account.</p>
+      </section>
+
+      <!-- Form panel -->
+      <section class="flex flex-col justify-center px-6 py-10 sm:px-10 lg:px-12">
+        <div class="mb-8 flex items-center gap-3 md:hidden">
+          <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-900 text-brand-200">
+            <span class="material-symbols-outlined text-[20px]" aria-hidden="true">spa</span>
+          </span>
+          <span class="font-heading text-lg font-extrabold tracking-[0.18em] text-brand-950 dark:text-white">SAGE</span>
+        </div>
+
+        <h1 class="font-heading text-2xl font-extrabold tracking-tight text-brand-950 dark:text-white sm:text-[28px]">
           Welcome back
         </h1>
-        <p class="text-sm text-slate-500 dark:text-slate-400 leading-relaxed max-w-xs mx-auto">
-          Log in to pick up your conversation where you left off.
+        <p class="mt-2 text-sm leading-relaxed text-brand-600 dark:text-sand-400">
+          Continue where you left off.
         </p>
-      </div>
 
-      <div id="form-error" role="alert" class="hidden mb-4 rounded-xl border border-red-200 bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300 dark:border-red-900/70 px-3.5 py-2.5 text-sm"></div>
+        <div id="form-error" role="alert" class="mt-5 hidden rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-300"></div>
 
-      <form data-auth-form data-endpoint="/api/auth/login" class="space-y-4" autocomplete="on" novalidate>
-        <div>
-          <label for="email" class="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5 ml-0.5">Email</label>
-          <div class="relative rounded-xl shadow-sm">
-            <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 dark:text-slate-500">
-              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="2" y="4" width="20" height="16" rx="2"></rect><path d="m2 7 10 6 10-6"></path>
-              </svg>
+        <form data-auth-form data-endpoint="/api/auth/login" class="mt-7 space-y-5" autocomplete="on" novalidate>
+          <div>
+            <label for="email" class="field-label">Email</label>
+            <div class="field-wrap">
+              <span class="field-icon material-symbols-outlined text-[18px]" aria-hidden="true">mail</span>
+              <input
+                type="email" id="email" required autofocus autocomplete="email"
+                data-field="email" placeholder="you@example.com"
+                class="field-input field-input--icon"
+              >
             </div>
-            <input
-              type="email" id="email" required autofocus autocomplete="email"
-              data-field="email" placeholder="you@example.com"
-              class="w-full block pl-10 pr-4 py-2.5 bg-slate-50/50 hover:bg-slate-50 focus:bg-white text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800/50 dark:hover:bg-slate-800 dark:focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-600/20 focus:border-brand-600 transition-colors"
-            >
           </div>
-        </div>
 
-        <div>
-          <label for="password" class="block text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1.5 ml-0.5">Password</label>
-          <div class="relative rounded-xl shadow-sm">
-            <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 dark:text-slate-500">
-              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="4" y="10" width="16" height="11" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path>
-              </svg>
+          <div>
+            <label for="password" class="field-label">Password</label>
+            <div class="field-wrap">
+              <span class="field-icon material-symbols-outlined text-[18px]" aria-hidden="true">lock</span>
+              <input
+                type="password" id="password" required autocomplete="current-password"
+                data-field="password" placeholder="Your password"
+                class="field-input field-input--icon"
+              >
             </div>
-            <input
-              type="password" id="password" required autocomplete="current-password"
-              data-field="password" placeholder="Your password"
-              class="w-full block pl-10 pr-4 py-2.5 bg-slate-50/50 hover:bg-slate-50 focus:bg-white text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800/50 dark:hover:bg-slate-800 dark:focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-600/20 focus:border-brand-600 transition-colors"
-            >
           </div>
-        </div>
 
-        <button
-          type="submit"
-          class="w-full inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-white font-medium text-sm transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-600 focus:ring-offset-2 dark:focus:ring-offset-slate-900 disabled:opacity-60 disabled:cursor-not-allowed"
-        >
-          <span>Log in</span>
-        </button>
-      </form>
+          <button type="submit" class="btn-primary">
+            <span>Log in</span>
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">arrow_forward</span>
+          </button>
+        </form>
 
-      <p class="text-sm text-center text-slate-500 dark:text-slate-400 mt-6 pt-6 border-t border-slate-100 dark:border-slate-800">
-        Don't have an account?
-        <a href="/register" class="text-brand-600 dark:text-brand-500 hover:text-brand-700 dark:hover:text-brand-400 font-medium underline underline-offset-4 focus:outline-none focus:ring-2 focus:ring-brand-600 rounded">Sign up</a>
-      </p>
-    </div>
+        <p class="mt-8 border-t border-sand-200 pt-6 text-center text-sm text-brand-600 dark:border-white/5 dark:text-sand-400">
+          New to SAGE?
+          <a href="/register" class="font-semibold text-brand-800 underline underline-offset-4 transition-colors hover:text-brand-950 focus:outline-none focus:ring-2 focus:ring-brand-600/30 dark:text-brand-200 dark:hover:text-white">Create an account</a>
+        </p>
 
-    <div class="text-center mt-6">
-      <span class="text-xs text-slate-400 dark:text-slate-500 font-medium">SAGE &bull; AI Assistant</span>
+        <p class="mt-8 text-center text-[11px] font-medium tracking-tight text-brand-400 dark:text-sand-500">SAGE &bull; AI Assistant</p>
+      </section>
+
     </div>
   </main>
 

@@ -1,5 +1,5 @@
 <!doctype html>
-<html class="h-full" lang="en" dir="ltr">
+<html lang="en" class="h-full">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,59 +8,71 @@
   <!-- theme bootstrap: runs before first paint -->
   <script src="{{ url_for('static', filename='theme.js') }}"></script>
 
-  <link href="https://fonts.googleapis.com" rel="preconnect">
-  <link crossorigin href="https://fonts.gstatic.com" rel="preconnect">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Public+Sans:wght@500;600&family=Noto+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..600,0..1,0&display=swap" rel="stylesheet">
 
   <script src="https://cdn.tailwindcss.com"></script>
-  <script id="tailwind-config">
+  <script>
     tailwind.config = {
       darkMode: "class",
       theme: {
         extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            body: ['Inter', 'system-ui', 'sans-serif'],
+            heading: ['Plus Jakarta Sans', 'system-ui', 'sans-serif'],
+            display: ['Plus Jakarta Sans', 'system-ui', 'sans-serif'],
+            label: ['Inter', 'system-ui', 'sans-serif'],
+          },
           colors: {
             brand: {
-              50: '#eff6ff',
-              100: '#dbeafe',
-              500: '#3b82f6',
-              600: '#2563eb',
-              700: '#1d4ed8'
-            }
+              50: '#eef5f1', 100: '#dbe5e0', 200: '#b9ede0', 300: '#9ed1c4',
+              400: '#7ca89b', 500: '#5b8f7a', 600: '#3b665b', 700: '#1c4f45',
+              800: '#143f36', 900: '#0f3d33', 950: '#00261e',
+            },
+            sand: {
+              50: '#faf9f5', 100: '#f5f4f0', 200: '#e3e2df', 300: '#d8d6d1',
+              400: '#b6b4ae', 500: '#8a8883',
+            },
           },
-          fontFamily: {
-            headline: ["Plus Jakarta Sans", "sans-serif"],
-            display: ["Plus Jakarta Sans", "sans-serif"],
-            body: ["Inter", "sans-serif"],
-            label: ["Public Sans", "sans-serif"]
-          }
         },
       },
     }
   </script>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body class="h-full bg-slate-50 text-slate-800 antialiased font-body selection:bg-blue-100 selection:text-blue-900 dark:bg-slate-950 dark:text-slate-200 dark:selection:bg-blue-900 dark:selection:text-blue-100">
+<body class="h-full bg-sand-50 font-body text-brand-950 antialiased selection:bg-brand-200 selection:text-brand-950 dark:bg-[#0b1512] dark:text-sand-100 dark:selection:bg-brand-700 dark:selection:text-white">
 
-  <div class="h-screen w-full flex flex-col justify-between max-w-[880px] mx-auto bg-white dark:bg-slate-900 shadow-[0_0_50px_-12px_rgba(0,0,0,0.06)] dark:shadow-none border-x border-slate-200/80 dark:border-slate-800">
+  <div class="mx-auto flex h-screen w-full max-w-[880px] flex-col bg-white shadow-[0_0_60px_-24px_rgba(15,61,51,0.25)] dark:bg-[#141d1b] border-x border-sand-200/80 dark:border-white/5">
 
     <!-- Top app bar -->
-    <header class="sticky top-0 z-40 w-full bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-zinc-200/80 dark:border-slate-800 shadow-sm">
-      <div class="px-4 h-14 flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <div class="w-8 h-8 rounded-lg bg-[#2563eb] text-white flex items-center justify-center shadow-sm shadow-blue-500/20">
-            <span class="material-symbols-outlined text-[19px]" aria-hidden="true">anchor</span>
-          </div>
-          <h1 class="font-display text-base font-bold text-zinc-900 dark:text-white tracking-tight">SAGE</h1>
+    <header class="sticky top-0 z-40 w-full border-b border-sand-200/80 bg-white/85 backdrop-blur-md dark:border-white/5 dark:bg-[#141d1b]/85">
+      <div class="flex h-14 items-center justify-between px-4">
+
+        <div class="flex items-center gap-2.5">
+          <span class="flex h-8 w-8 items-center justify-center rounded-xl bg-brand-900 text-brand-200 shadow-sm shadow-brand-900/20">
+            <span class="material-symbols-outlined text-[19px]" aria-hidden="true">spa</span>
+          </span>
+          <h1 class="font-display text-[15px] font-extrabold tracking-[0.14em] text-brand-950 dark:text-white">SAGE</h1>
+
+          <span class="ms-1 hidden items-center gap-1 rounded-full bg-brand-50 px-2 py-1 text-[10px] font-semibold tracking-wide text-brand-700 ring-1 ring-brand-100 dark:bg-brand-900/40 dark:text-brand-200 dark:ring-brand-800 sm:inline-flex">
+            <span class="material-symbols-outlined text-[13px]" aria-hidden="true">auto_awesome</span>
+            Personal memory
+          </span>
         </div>
 
-        <div class="flex items-center gap-2 text-sm">
-          <div class="flex items-center text-slate-600 dark:text-slate-300 font-medium">
-            <span id="greeting">Hi there</span>
-            <button class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 underline cursor-pointer ml-2 font-normal transition-colors" id="logout" type="button">log out</button>
+        <div class="flex items-center gap-1.5 text-sm">
+          <div class="flex items-center font-medium text-brand-700 dark:text-sand-300">
+            <span id="greeting" class="max-w-[68px] truncate sm:max-w-none">Hi there</span>
+            <button class="ms-2 cursor-pointer rounded text-xs font-normal text-brand-500 underline underline-offset-2 transition-colors hover:text-brand-800 dark:text-brand-300 dark:hover:text-white" id="logout" type="button">
+              <span class="material-symbols-outlined text-[15px] sm:hidden" aria-hidden="true">logout</span>
+              <span class="hidden sm:inline" id="logout-label">log out</span>
+            </button>
           </div>
 
-          <div class="h-4 w-[1px] bg-slate-200 dark:bg-slate-700 mx-1 hidden sm:block"></div>
+          <div class="mx-1 hidden h-4 w-px bg-sand-200 dark:bg-white/10 sm:block"></div>
 
           <button
             type="button"
@@ -68,7 +80,7 @@
             id="lang-toggle"
             aria-label="Switch language"
             title="Language"
-            class="h-8 px-2.5 rounded-full flex items-center gap-1 border transition-colors bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/40 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white"
+            class="flex h-8 items-center gap-1 rounded-full border border-sand-200 bg-sand-100 px-2.5 text-brand-600 transition-colors hover:bg-sand-200 hover:text-brand-900 focus:outline-none focus:ring-2 focus:ring-brand-600/25 dark:border-white/10 dark:bg-white/5 dark:text-sand-300 dark:hover:bg-white/10 dark:hover:text-white"
           >
             <span class="material-symbols-outlined text-[17px]" aria-hidden="true">language</span>
             <span id="lang-label" class="text-xs font-semibold">EN</span>
@@ -79,62 +91,62 @@
             data-theme-toggle
             aria-label="Switch theme"
             title="Theme"
-            class="w-8 h-8 rounded-full flex items-center justify-center border transition-colors bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/40 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white"
+            class="flex h-8 w-8 items-center justify-center rounded-full border border-sand-200 bg-sand-100 text-brand-600 transition-colors hover:bg-sand-200 hover:text-brand-900 focus:outline-none focus:ring-2 focus:ring-brand-600/25 dark:border-white/10 dark:bg-white/5 dark:text-sand-300 dark:hover:bg-white/10 dark:hover:text-white"
           >
-            <svg data-theme-icon="to-dark" xmlns="http://www.w3.org/2000/svg" class="hidden w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <svg data-theme-icon="to-dark" xmlns="http://www.w3.org/2000/svg" class="hidden h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
             </svg>
-            <svg data-theme-icon="to-light" xmlns="http://www.w3.org/2000/svg" class="hidden w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <svg data-theme-icon="to-light" xmlns="http://www.w3.org/2000/svg" class="hidden h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="4"></circle>
               <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
             </svg>
           </button>
 
-          <button class="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center justify-center text-slate-700 dark:text-slate-200 transition-colors" title="You" type="button">
-            <span id="avatar" class="text-xs font-semibold">?</span>
+          <button class="flex h-8 w-8 items-center justify-center rounded-full bg-brand-100 text-brand-800 transition-colors hover:bg-brand-200 dark:bg-brand-900/60 dark:text-brand-200 dark:hover:bg-brand-800" title="You" type="button">
+            <span id="avatar" class="text-[11px] font-bold">?</span>
           </button>
         </div>
       </div>
     </header>
 
     <!-- Message thread -->
-    <main class="flex-1 overflow-y-auto px-4 py-6 space-y-6 scroll-smooth" id="messages" aria-live="polite">
+    <main class="flex-1 space-y-6 overflow-y-auto px-4 py-6 scroll-smooth" id="messages" aria-live="polite">
 
       <!-- Greeting -->
-      <div class="flex items-start gap-3 max-w-[85%] group animate-fade-in" id="welcome-row">
-        <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 text-white flex-shrink-0 flex items-center justify-center shadow-sm mt-0.5">
-          <span class="material-symbols-outlined text-[16px]" aria-hidden="true">smart_toy</span>
+      <div class="chat-row animate-fade-in" id="welcome-row">
+        <div class="chat-avatar">
+          <span class="material-symbols-outlined text-[16px]" aria-hidden="true">spa</span>
         </div>
-        <div class="flex flex-col">
-          <div class="bg-[#eef1f5] text-[#1e293b] dark:bg-slate-800 dark:text-slate-100 px-4 py-3 rounded-[16px] rounded-bl-[4px] text-[15px] leading-relaxed shadow-sm whitespace-pre-wrap break-words" id="welcome-bubble"></div>
-          <span class="text-xs text-slate-400 dark:text-slate-500 mt-1.5 ml-1 font-label">Token Harbor AI</span>
+        <div class="chat-col">
+          <div class="bubble bubble--assistant" id="welcome-bubble" dir="auto"></div>
+          <div class="chat-meta">
+            <span class="chat-time">SAGE</span>
+          </div>
         </div>
       </div>
 
     </main>
 
     <!-- Composer -->
-    <footer class="sticky bottom-0 z-30 bg-gradient-to-t from-white via-white/95 to-white/70 dark:from-slate-900 dark:via-slate-900/95 dark:to-slate-900/70 backdrop-blur-md pt-2 pb-3 px-4 border-t border-slate-200/80 dark:border-slate-800">
+    <footer class="sticky bottom-0 z-30 border-t border-sand-200/80 bg-gradient-to-t from-white via-white/95 to-white/80 px-4 pb-3 pt-3 backdrop-blur-md dark:border-white/5 dark:from-[#141d1b] dark:via-[#141d1b]/95 dark:to-[#141d1b]/80">
       <form class="w-full" id="composer">
-        <div class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-200/90 dark:border-slate-700 shadow-sm focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500 p-2.5 flex items-end gap-2.5 transition-all">
-          <button class="text-xs font-medium text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 px-2.5 py-2 rounded-lg transition-colors flex items-center gap-1 flex-shrink-0" id="clear" title="Clear conversation" type="button">
+        <div class="flex items-end gap-2.5 rounded-2xl border border-sand-200 bg-sand-50/60 p-2.5 shadow-sm transition-all focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-600/15 dark:border-white/10 dark:bg-white/5">
+          <button class="flex flex-shrink-0 items-center gap-1 rounded-lg px-2.5 py-2 text-xs font-medium text-brand-400 transition-colors hover:bg-white hover:text-brand-700 dark:text-sand-500 dark:hover:bg-white/5 dark:hover:text-sand-200" id="clear" title="Clear conversation" type="button">
             <span class="material-symbols-outlined text-base" aria-hidden="true">ink_eraser</span>
             <span class="hidden sm:inline" id="clear-label">Clear</span>
           </button>
 
-          <textarea class="resize-none text-[15px] leading-relaxed text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 bg-transparent flex-1 border-0 focus:outline-none py-1.5 max-h-36 overflow-y-auto" id="input" placeholder="Type a message…  (Enter to send, Shift+Enter for a new line)" rows="1" autofocus></textarea>
+          <textarea class="max-h-36 flex-1 resize-none overflow-y-auto border-0 bg-transparent py-1.5 text-[15px] leading-relaxed text-brand-950 placeholder:text-brand-400 focus:outline-none dark:text-sand-100 dark:placeholder:text-sand-500" id="input" placeholder="Type a message…  (Enter to send, Shift+Enter for a new line)" rows="1" autofocus></textarea>
 
-          <button aria-label="Send message" class="w-9 h-9 rounded-full bg-[#2563eb] text-white flex items-center justify-center hover:bg-blue-700 transition-all shadow-sm hover:shadow active:scale-95 flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed" id="send" type="submit">
-            <svg class="w-4 h-4 translate-x-0.5 -translate-y-0.5 fill-current" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
-            </svg>
+          <button aria-label="Send message" class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-brand-900 text-white shadow-sm transition-all hover:bg-brand-800 hover:shadow active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-brand-200 dark:text-brand-950 dark:hover:bg-brand-100" id="send" type="submit">
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">arrow_upward</span>
           </button>
         </div>
       </form>
 
       <div class="mt-2 text-center">
-        <p class="text-[11px] font-label text-slate-400 dark:text-slate-500 tracking-tight flex items-center justify-center gap-2 min-h-[16px]">
-          <span id="status-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" style="display:none"></span>
+        <p class="flex min-h-[16px] items-center justify-center gap-2 text-[11px] tracking-tight text-brand-400 dark:text-sand-500">
+          <span id="status-dot" class="h-1.5 w-1.5 animate-pulse rounded-full bg-brand-500" style="display:none"></span>
           <span id="status"></span>
         </p>
       </div>
