@@ -8,6 +8,10 @@ Privacy rules for call sites:
 * log user ids, tool names, counts, flags, timings, and error codes;
 * never log chat text, entity names, predicates, fact values, tool arguments,
   tool results, JWTs, API keys, cookies, or request bodies.
+
+SQL bind values are the one exception, and only when ``LOG_SQL_PARAMS`` is
+enabled: those logs contain personal memory data, so keep the flag off outside
+local debugging.
 """
 
 from __future__ import annotations
@@ -53,6 +57,7 @@ EXTRA_FIELDS = (
     "tool",
     "operation",
     "sql",
+    "sql_params",
     "ok",
     "outcome",
     "error_type",
@@ -137,6 +142,12 @@ class TextFormatter(logging.Formatter):
             return "true" if value else "false"
         return str(value)
 
+    @staticmethod
+    def _one_line(value: Any) -> str:
+        # Bind values are already repr-escaped; strip anything left so a value
+        # can never inject a fake log line.
+        return "".join(ch if ch.isprintable() else " " for ch in str(value))
+
     def format(self, record: logging.LogRecord) -> str:
         timestamp = _utc_timestamp(record.created).replace("T", " ").replace("Z", "")
         event = getattr(record, "event", None) or record.getMessage()
@@ -144,7 +155,7 @@ class TextFormatter(logging.Formatter):
 
         fields = []
         for field in EXTRA_FIELDS:
-            if field in ("event", "sql"):
+            if field in ("event", "sql", "sql_params"):
                 continue
             value = getattr(record, field, None)
             if value is not None:
@@ -155,6 +166,9 @@ class TextFormatter(logging.Formatter):
         sql = getattr(record, "sql", None)
         if sql:
             line += f"\n    SQL: {sql}"
+        sql_params = getattr(record, "sql_params", None)
+        if sql_params:
+            line += f"\n    PARAMS: {self._one_line(sql_params)}"
         if record.exc_info:
             line += "\n" + self.formatException(record.exc_info)
         return line

@@ -41,6 +41,7 @@ class FormatterTests(unittest.TestCase):
         record.reason = "مرحبا"
         record.operation = "fact.query"
         record.sql = "SELECT * FROM memory_facts WHERE user_id = ?"
+        record.sql_params = "(42, 'Sara')"
         return record
 
     def test_json_formatter_emits_structured_fields(self):
@@ -54,6 +55,7 @@ class FormatterTests(unittest.TestCase):
         self.assertEqual(payload["reason"], "مرحبا")
         self.assertEqual(payload["operation"], "fact.query")
         self.assertIn("WHERE user_id = ?", payload["sql"])
+        self.assertEqual(payload["sql_params"], "(42, 'Sara')")
 
     def test_text_formatter_includes_event_and_extras(self):
         line = logging_config.TextFormatter().format(self._record())
@@ -64,6 +66,14 @@ class FormatterTests(unittest.TestCase):
         self.assertIn("duration_ms=1.25ms", line)
         self.assertIn("operation=fact.query", line)
         self.assertIn("\n    SQL: SELECT * FROM memory_facts WHERE user_id = ?", line)
+        self.assertIn("\n    PARAMS: (42, 'Sara')", line)
+
+    def test_text_formatter_keeps_params_on_one_line(self):
+        record = self._record()
+        record.sql_params = "(1, 'line1\nline2')"
+        line = logging_config.TextFormatter().format(record)
+        self.assertIn("PARAMS: (1, 'line1 line2')", line)
+        self.assertEqual(line.count("\n"), 2)  # one SQL line, one PARAMS line
 
 
 class RequestContextTests(unittest.TestCase):

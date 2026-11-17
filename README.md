@@ -193,6 +193,7 @@ Config (all optional except the key):
 | `LOG_LEVEL` | `INFO` | stdlib log level |
 | `LOG_FORMAT` | `text` | `text` for readable logs or `json` for machines |
 | `LOG_SQL` | `1` | log normalized SQL statements; `0` disables |
+| `LOG_SQL_PARAMS` | — | log SQL bind values (full query); dev only, see privacy note |
 | `LOG_FILE` | `instance/app.log` | rotating log file; set to empty to disable |
 | `LOG_MAX_BYTES` | `5000000` | rotate the log file after this size |
 | `LOG_BACKUP_COUNT` | `5` | number of rotated log files to keep |
@@ -282,16 +283,25 @@ What is logged:
 - `memory.query` / `memory.save` — filter flags, input counts, result counts,
   duration.
 - `memory.sql` — normalized SQL statements with `?` placeholders, operation
-  name, and duration. Set `LOG_SQL=0` to disable.
+  name, and duration. Set `LOG_SQL=0` to disable. Set `LOG_SQL_PARAMS=1` to add
+  a `PARAMS:` line with the bind values (see the privacy note below).
 - `tool.start` / `tool.end` / `tool.error` — tool name, success, duration,
   error type.
 - `memory.*.invalid` and `*.error` — validation warnings and unexpected errors.
 
 Privacy: logs never contain chat text, entity names, predicates, fact values,
-query text, SQL parameter values, tool arguments/results, JWTs, API keys,
-cookies, or request bodies. Loggers use counts, flags, timings, and error types
-instead. SQL logging includes only statement text and `?` placeholders, never
-bind values.
+query text, tool arguments/results, JWTs, API keys, cookies, or request bodies.
+Loggers use counts, flags, timings, and error types instead. SQL logging includes
+only statement text and `?` placeholders. The one opt-in exception is
+`LOG_SQL_PARAMS=1`, which appends the bind values so you can see the full query;
+those values are personal memory data (names, facts, query text), so keep the
+flag off outside local debugging and avoid leaving it on in `instance/app.log`.
+
+```text
+2026-11-17 04:03:17.838 INFO  memory         memory.sql | request_id=… user_id=1 operation=fact.query duration_ms=0.08ms outcome=ok
+    SQL: SELECT f.*, e.name AS entity_name, … WHERE f.user_id = ? AND e.user_id = ? AND e.name = ? COLLATE NOCASE … LIMIT ?
+    PARAMS: (1, 1, 'Sara', 20)
+```
 
 The sections below describe the `core` client that the app is built on.
 

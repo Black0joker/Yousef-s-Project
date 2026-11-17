@@ -68,6 +68,14 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - Route every memory SQL statement through `_execute(...)`: it emits
   `memory.sql` with normalized statement text, operation, and duration. Log SQL
   with `?` placeholders only; never add bind values. `LOG_SQL=0` disables it.
+- Bind values are the sole opt-in exception: `_execute` adds a sanitized
+  `sql_params` string only when `LOG_SQL_PARAMS` is truthy (off by default).
+  Keep the default redaction intact: values go through `repr()` (escapes
+  newlines) and are truncated per value and overall. `TextFormatter` renders a
+  single `PARAMS:` line, `JsonFormatter` a `sql_params` field. If you change the
+  renderer, keep `tests/test_memory.py`'s redaction test passing with the flag
+  off (`LOG_SQL_PARAMS=0` / unset) and its enabled test passing with
+  `LOG_SQL_PARAMS=1`.
 - Log through `logging.getLogger(__name__)` with structured `extra={...}`
   fields (`event`, counts, timings, `outcome`), not interpolated message text.
   `RequestContextFilter` adds `request_id`/`user_id` to records inside a Flask

@@ -162,14 +162,71 @@ def _elapsed(started: float) -> float:
 
 
 _SQL_OFF = frozenset({"0", "false", "no", "off"})
+_SQL_PARAMS_ON = frozenset({"1", "true", "yes", "on"})
+
+#: Bind values are shortened so one large JSON fact cannot bloat the log file.
+_PARAM_MAX_CHARS = 200
+_PARAMS_MAX_CHARS = 2000
 
 
 def _sql_logging_enabled() -> bool:
     return os.environ.get("LOG_SQL", "1").strip().lower() not in _SQL_OFF
 
 
+def _sql_param_logging_enabled() -> bool:
+    """Bind values are opt-in (``LOG_SQL_PARAMS=1``) and off by default."""
+    return os.environ.get("LOG_SQL_PARAMS", "").strip().lower() in _SQL_PARAMS_ON
+
+
 def _normalize_sql(sql: str) -> str:
     return " ".join(sql.split())
+
+
+def _render_sql_param(value: Any) -> str:
+    """Render one bind value on a single escaped line."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        text = repr(bytes(value))
+    else:
+        text = repr(value)
+    if len(text) > _PARAM_MAX_CHARS:
+        text = f"{text[:_PARAM_MAX_CHARS]}...<+{len(text) - _PARAM_MAX_CHARS} chars>"
+    return text
+
+
+def _format_sql_params(params: Any) -> str:
+    """Render bind values in bind order; ``repr`` escapes newlines and quotes."""
+    if not params:
+        return "()"
+    if isinstance(params, Mapping):
+        rendered = [f"{name}={_render_sql_param(value)}" for name, value in params.items()]
+    else:
+        rendered = [_render_sql_param(value) for value in params]
+    text = "(" + ", ".join(rendered) + ")"
+    if len(text) > _PARAMS_MAX_CHARS:
+        text = f"{text[:_PARAMS_MAX_CHARS]}...<+{len(text) - _PARAMS_MAX_CHARS} chars>"
+    return text
+
+
+def _sql_log_extra(
+    event: str,
+    operation: str,
+    normalized: str,
+    params: Any,
+    duration_ms: float,
+    outcome: Optional[str] = None,
+) -> Dict[str, Any]:
+    extra: Dict[str, Any] = {
+        "event": event,
+        "user_id": _current_user.get(),
+        "operation": operation,
+        "sql": normalized,
+        "duration_ms": duration_ms,
+    }
+    if outcome is not None:
+        extra["outcome"] = outcome
+    if _sql_param_logging_enabled():
+        extra["sql_params"] = _format_sql_params(params)
+    return extra
 
 
 def _execute(
@@ -179,7 +236,11 @@ def _execute(
     *,
     operation: str,
 ) -> sqlite3.Cursor:
-    """Execute SQL and log the statement text (placeholders only, no values)."""
+    """Execute SQL and log the statement text with ``?`` placeholders.
+
+    Bind values are logged only when ``LOG_SQL_PARAMS`` is enabled, because the
+    memory parameters contain personal data.
+    """
     normalized = _normalize_sql(sql)
     started = time.perf_counter()
     try:
@@ -187,26 +248,26 @@ def _execute(
     except Exception:
         logger.exception(
             "memory.sql.error",
-            extra={
-                "event": "memory.sql.error",
-                "user_id": _current_user.get(),
-                "operation": operation,
-                "sql": normalized,
-                "duration_ms": _elapsed(started),
-            },
+            extra=_sql_log_extra(
+                "memory.sql.error",
+                operation,
+                normalized,
+                params,
+                _elapsed(started),
+            ),
         )
         raise
     if _sql_logging_enabled():
         logger.info(
             "memory.sql",
-            extra={
-                "event": "memory.sql",
-                "user_id": _current_user.get(),
-                "operation": operation,
-                "sql": normalized,
-                "duration_ms": _elapsed(started),
-                "outcome": "ok",
-            },
+            extra=_sql_log_extra(
+                "memory.sql",
+                operation,
+                normalized,
+                params,
+                _elapsed(started),
+                outcome="ok",
+            ),
         )
     return cursor
 

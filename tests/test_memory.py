@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -353,6 +354,7 @@ class MemoryTestCase(unittest.TestCase):
         ).fetchone()["n"]
         self.assertEqual(count, 0)
 
+    @patch.dict(os.environ, {"LOG_SQL_PARAMS": "0"})
     def test_memory_logs_are_structured_and_redacted(self):
         with self.assertLogs("memory", level="INFO") as captured:
             memory.save_memory(
@@ -385,6 +387,7 @@ class MemoryTestCase(unittest.TestCase):
         sql_records = [record for record in records if record.event == "memory.sql"]
         self.assertTrue(any(record.operation == "fact.query" for record in sql_records))
         self.assertTrue(all("?" in record.sql for record in sql_records))
+        self.assertFalse(any(hasattr(record, "sql_params") for record in sql_records))
 
         rendered = "\n".join(f"{record.getMessage()} {record.__dict__}" for record in records)
         for secret in (
@@ -394,6 +397,32 @@ class MemoryTestCase(unittest.TestCase):
             "TOP_SECRET_QUERY",
         ):
             self.assertNotIn(secret, rendered)
+
+    @patch.dict(os.environ, {"LOG_SQL_PARAMS": "1"})
+    def test_memory_sql_params_are_logged_when_enabled(self):
+        long_value = "x" * 400
+        with self.assertLogs("memory", level="INFO") as captured:
+            memory.save_memory(
+                self.user_a,
+                {
+                    "facts": [
+                        {"entity": "Sara", "predicate": "note", "value": "line1\nline2"},
+                        {"entity": "Sara", "predicate": "blob", "value": long_value},
+                    ]
+                },
+                connection=self.conn,
+            )
+
+        sql_records = [record for record in captured.records if record.event == "memory.sql"]
+        self.assertTrue(sql_records)
+        params = [getattr(record, "sql_params", "") for record in sql_records]
+        self.assertTrue(all(params))
+        self.assertTrue(all("?" in record.sql for record in sql_records))
+        self.assertTrue(any("Sara" in value for value in params))
+        # Values stay on one line and long values are shortened.
+        self.assertTrue(all("\n" not in value for value in params))
+        self.assertFalse(any("x" * 300 in value for value in params))
+        self.assertTrue(any("...<+" in value for value in params))
 
     def test_invalid_memory_operations_log_warnings(self):
         with self.assertLogs("memory", level="WARNING") as captured:
