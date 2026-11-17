@@ -16,6 +16,7 @@ streaming, conversation history, tool calling, and typed error handling.
 .
 ├── app.py                 # Flask app: pages, auth API, chat API, memory tools
 ├── auth.py                # users, password hashing, JWTs, auth middleware
+├── logging_config.py      # structured logs, request IDs, rotating file
 ├── memory.py              # personal memory schema, queries, agent tools
 ├── templates/
 │   ├── login.html         # email + password
@@ -38,6 +39,7 @@ streaming, conversation history, tool calling, and typed error handling.
 │   ├── test_app.py        # Flask app tests (stubbed client, no network)
 │   ├── test_core.py       # client unit tests (local mock gateway, no network)
 │   ├── test_memory.py     # entities, relationships, facts, tool handlers
+│   ├── test_logging.py    # formatters, request IDs, file rotation, redaction
 │   └── integration/
 │       └── test_integration.py   # live tests against tokenharbor.ai
 ├── instance/app.db        # SQLite user database (created at runtime, gitignored)
@@ -188,6 +190,12 @@ Config (all optional except the key):
 | `TH_SYSTEM_PROMPT` | — | optional persona override applied to every language; unset uses `prompts/*.md` |
 | `PORT` | `5000` | dev server port |
 | `FLASK_DEBUG` | `1` | set to `0` to disable the debug reloader |
+| `LOG_LEVEL` | `INFO` | stdlib log level |
+| `LOG_FORMAT` | `text` | `text` for readable logs or `json` for machines |
+| `LOG_SQL` | `1` | log normalized SQL statements; `0` disables |
+| `LOG_FILE` | `instance/app.log` | rotating log file; set to empty to disable |
+| `LOG_MAX_BYTES` | `5000000` | rotate the log file after this size |
+| `LOG_BACKUP_COUNT` | `5` | number of rotated log files to keep |
 
 Generate a signing key with:
 
@@ -250,6 +258,40 @@ data: {"delta":"Saved."}
 “Searching memory...”, “Memory saved”) and never stores the status in chat
 history. Tool arguments and results are not sent to the browser. The configured
 model must support tool calling (`TH_MODEL`).
+
+## Logging
+
+Logs go to stdout and a rotating file (`instance/app.log` by default). Set
+`LOG_FILE=` to disable the file handler. Text is the default format for local
+readability; set `LOG_FORMAT=json` for structured production logs.
+
+Every request gets an `X-Request-ID` response header. HTTP, chat, memory, and
+tool logs carry `request_id`, and authenticated operations also carry `user_id`.
+
+```text
+2026-11-17 04:03:17.836 INFO  memory         memory.query | request_id=9ddc8dddf5b44f06a42f7e914f1244b7 user_id=1 has_entity=true has_predicate=false has_query=false query_chars=0 include_expired=false limit=20 entity_count=1 relationship_count=0 fact_count=1 duration_ms=2.41ms outcome=ok
+2026-11-17 04:03:17.838 INFO  memory         memory.sql | request_id=9ddc8dddf5b44f06a42f7e914f1244b7 user_id=1 operation=fact.query duration_ms=0.08ms outcome=ok
+    SQL: SELECT f.*, e.name AS entity_name, e.entity_type AS entity_type FROM memory_facts f JOIN entities e ON e.id = f.entity_id WHERE f.user_id = ? AND e.user_id = ? AND e.name = ? COLLATE NOCASE ORDER BY f.observed_at DESC, f.created_at DESC LIMIT ?
+```
+
+What is logged:
+
+- `http.request` / `http.response` — method, path, status, duration.
+- `chat.request` / `chat.done` / `chat.stream.done` — model, language, message
+  count, finish reason, duration.
+- `memory.query` / `memory.save` — filter flags, input counts, result counts,
+  duration.
+- `memory.sql` — normalized SQL statements with `?` placeholders, operation
+  name, and duration. Set `LOG_SQL=0` to disable.
+- `tool.start` / `tool.end` / `tool.error` — tool name, success, duration,
+  error type.
+- `memory.*.invalid` and `*.error` — validation warnings and unexpected errors.
+
+Privacy: logs never contain chat text, entity names, predicates, fact values,
+query text, SQL parameter values, tool arguments/results, JWTs, API keys,
+cookies, or request bodies. Loggers use counts, flags, timings, and error types
+instead. SQL logging includes only statement text and `?` placeholders, never
+bind values.
 
 The sections below describe the `core` client that the app is built on.
 
@@ -416,8 +458,8 @@ python -m unittest discover -s tests/integration -v
 The offline suite covers the `core` client, the Flask app, authentication, and
 personal memory: registration, duplicate/case-insensitive emails, validation,
 login, JWT claims and expiry, the middleware, the per-message delete/prompt
-rules, memory saves/queries, user isolation, replacement/expiry behavior, and
-tool lifecycle events.
+rules, memory saves/queries, user isolation, replacement/expiry behavior, tool
+lifecycle events, structured logging, request correlation, and log redaction.
 
 Integration tests default to the free model `deepseek-v4.1-flash:free` so they
 don't spend your balance. Override with `TH_TEST_MODEL`:

@@ -14,14 +14,23 @@ memory.
 
 from __future__ import annotations
 
+import contextvars
 import json
+import logging
+import os
 import sqlite3
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import auth
+
+logger = logging.getLogger(__name__)
+_current_user: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    "memory_current_user", default=None
+)
 
 # --- limits ---------------------------------------------------------------
 
@@ -148,6 +157,60 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+def _elapsed(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 2)
+
+
+_SQL_OFF = frozenset({"0", "false", "no", "off"})
+
+
+def _sql_logging_enabled() -> bool:
+    return os.environ.get("LOG_SQL", "1").strip().lower() not in _SQL_OFF
+
+
+def _normalize_sql(sql: str) -> str:
+    return " ".join(sql.split())
+
+
+def _execute(
+    db: sqlite3.Connection,
+    sql: str,
+    params: Sequence[Any] = (),
+    *,
+    operation: str,
+) -> sqlite3.Cursor:
+    """Execute SQL and log the statement text (placeholders only, no values)."""
+    normalized = _normalize_sql(sql)
+    started = time.perf_counter()
+    try:
+        cursor = db.execute(sql, params)
+    except Exception:
+        logger.exception(
+            "memory.sql.error",
+            extra={
+                "event": "memory.sql.error",
+                "user_id": _current_user.get(),
+                "operation": operation,
+                "sql": normalized,
+                "duration_ms": _elapsed(started),
+            },
+        )
+        raise
+    if _sql_logging_enabled():
+        logger.info(
+            "memory.sql",
+            extra={
+                "event": "memory.sql",
+                "user_id": _current_user.get(),
+                "operation": operation,
+                "sql": normalized,
+                "duration_ms": _elapsed(started),
+                "outcome": "ok",
+            },
+        )
+    return cursor
+
+
 def _text(value: Any, field: str, max_length: int) -> str:
     if not isinstance(value, str) or not value.strip():
         raise MemoryError(f"{field} must be a non-empty string.")
@@ -155,6 +218,10 @@ def _text(value: Any, field: str, max_length: int) -> str:
     if len(cleaned) > max_length:
         raise MemoryError(f"{field} is too long (max {max_length} characters).")
     return cleaned
+
+
+def _has_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 def _optional_text(value: Any, field: str, max_length: int) -> Optional[str]:
@@ -290,12 +357,14 @@ def _fact_dict(row: sqlite3.Row) -> Dict[str, Any]:
 def _find_entity(
     db: sqlite3.Connection, user_id: int, name: str, entity_type: str
 ) -> Optional[sqlite3.Row]:
-    return db.execute(
+    return _execute(
+        db,
         """
         SELECT * FROM entities
         WHERE user_id = ? AND name = ? COLLATE NOCASE AND entity_type = ? COLLATE NOCASE
         """,
         (user_id, name, entity_type),
+        operation="entity.find",
     ).fetchone()
 
 
@@ -308,9 +377,11 @@ def _get_or_create_entity(
 
     entity_id = _new_id()
     try:
-        db.execute(
+        _execute(
+            db,
             "INSERT INTO entities (id, user_id, name, entity_type, created_at) VALUES (?, ?, ?, ?, ?)",
             (entity_id, user_id, name, entity_type, _now()),
+            operation="entity.insert",
         )
     except sqlite3.IntegrityError:
         # A concurrent request may have created the same entity; reuse it.
@@ -319,8 +390,11 @@ def _get_or_create_entity(
             raise
         return existing, False
 
-    row = db.execute(
-        "SELECT * FROM entities WHERE id = ? AND user_id = ?", (entity_id, user_id)
+    row = _execute(
+        db,
+        "SELECT * FROM entities WHERE id = ? AND user_id = ?",
+        (entity_id, user_id),
+        operation="entity.get",
     ).fetchone()
     assert row is not None
     return row, True
@@ -337,13 +411,15 @@ def _resolve_entity(
     if entity_type is None:
         # A relationship/fact refers to an entity by name only. Prefer any
         # existing entity of that name instead of creating a duplicate Person.
-        existing = db.execute(
+        existing = _execute(
+            db,
             """
             SELECT * FROM entities
             WHERE user_id = ? AND name = ? COLLATE NOCASE
             ORDER BY created_at ASC LIMIT 1
             """,
             (user_id, cleaned),
+            operation="entity.resolve",
         ).fetchone()
         if existing is not None:
             return existing, False
@@ -355,10 +431,14 @@ def ensure_self_entity(
 ) -> Dict[str, Any]:
     """Return the per-user ``Current User`` entity, creating it if needed."""
     key = _user_id(user_id)
-    with _db(connection) as db:
-        row, _ = _get_or_create_entity(db, key, SELF_ENTITY_NAME, SELF_ENTITY_TYPE)
-        db.commit()
-        return _entity_dict(row)
+    token = _current_user.set(key)
+    try:
+        with _db(connection) as db:
+            row, _ = _get_or_create_entity(db, key, SELF_ENTITY_NAME, SELF_ENTITY_TYPE)
+            db.commit()
+            return _entity_dict(row)
+    finally:
+        _current_user.reset(token)
 
 
 # --- write path -----------------------------------------------------------
@@ -374,18 +454,12 @@ def _list(value: Any, field: str, limit: int) -> List[Any]:
     return value
 
 
-def save_memory(
-    user_id: Any,
+def _save_memory(
+    key: int,
     payload: Any,
     connection: Optional[sqlite3.Connection] = None,
 ) -> Dict[str, Any]:
-    """Persist entities, relationships, and facts for one authenticated user.
-
-    ``payload`` is the argument object from the ``save_memory`` tool. All
-    records are written in one transaction; invalid input raises
-    :class:`MemoryError` and leaves the database unchanged.
-    """
-    key = _user_id(user_id)
+    """Transactional write path; the public wrapper adds identity and logging."""
     if not isinstance(payload, Mapping):
         raise MemoryError("save_memory expects an object.")
 
@@ -428,13 +502,15 @@ def save_memory(
                 relationship_type = _text(
                     item.get("relationship_type"), "relationship_type", MAX_RELATIONSHIP_TYPE
                 )
-                cursor = db.execute(
+                cursor = _execute(
+                    db,
                     """
                     INSERT OR IGNORE INTO relationships
                         (id, user_id, source_entity_id, target_entity_id, relationship_type, created_at)
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (_new_id(), key, source["id"], target["id"], relationship_type, now),
+                    operation="relationship.insert",
                 )
                 created_relationships += int(cursor.rowcount > 0)
 
@@ -455,7 +531,8 @@ def save_memory(
                 valid_until = _timestamp(item.get("valid_until"), "valid_until")
 
                 if _flag(item.get("replace"), "replace"):
-                    db.execute(
+                    _execute(
+                        db,
                         """
                         UPDATE memory_facts
                         SET valid_until = ?
@@ -463,10 +540,12 @@ def save_memory(
                           AND (valid_until IS NULL OR valid_until > ?)
                         """,
                         (now, key, entity["id"], predicate, now),
+                        operation="fact.expire",
                     )
 
                 fact_id = _new_id()
-                db.execute(
+                _execute(
+                    db,
                     """
                     INSERT INTO memory_facts
                         (id, user_id, entity_id, predicate, value, confidence, source,
@@ -475,14 +554,17 @@ def save_memory(
                     """,
                     (fact_id, key, entity["id"], predicate, value, confidence, source,
                      now, observed_at, valid_until),
+                    operation="fact.insert",
                 )
-                row = db.execute(
+                row = _execute(
+                    db,
                     """
                     SELECT f.*, e.name AS entity_name, e.entity_type AS entity_type
                     FROM memory_facts f JOIN entities e ON e.id = f.entity_id
                     WHERE f.id = ? AND f.user_id = ? AND e.user_id = ?
                     """,
                     (fact_id, key, key),
+                    operation="fact.get",
                 ).fetchone()
                 assert row is not None
                 saved_facts.append(_fact_dict(row))
@@ -503,11 +585,78 @@ def save_memory(
     }
 
 
+def save_memory(
+    user_id: Any,
+    payload: Any,
+    connection: Optional[sqlite3.Connection] = None,
+) -> Dict[str, Any]:
+    """Persist entities, relationships, and facts for one authenticated user.
+
+    ``payload`` is the argument object from the ``save_memory`` tool. All
+    records are written in one transaction; invalid input raises
+    :class:`MemoryError` and leaves the database unchanged.
+    """
+    started = time.perf_counter()
+    key: Optional[int] = None
+    token = None
+    try:
+        key = _user_id(user_id)
+        token = _current_user.set(key)
+        result = _save_memory(key, payload, connection=connection)
+    except MemoryError as exc:
+        logger.warning(
+            "memory.save.invalid",
+            extra={
+                "event": "memory.save.invalid",
+                "user_id": key,
+                "error_type": type(exc).__name__,
+                "reason": str(exc),
+                "duration_ms": _elapsed(started),
+            },
+        )
+        raise
+    except Exception:
+        logger.exception(
+            "memory.save.error",
+            extra={
+                "event": "memory.save.error",
+                "user_id": key,
+                "duration_ms": _elapsed(started),
+            },
+        )
+        raise
+    finally:
+        if token is not None:
+            _current_user.reset(token)
+
+    input_entities = payload.get("entities") if isinstance(payload, Mapping) else None
+    input_relationships = payload.get("relationships") if isinstance(payload, Mapping) else None
+    input_facts = payload.get("facts") if isinstance(payload, Mapping) else None
+    logger.info(
+        "memory.save",
+        extra={
+            "event": "memory.save",
+            "user_id": key,
+            "input_entities": len(input_entities) if isinstance(input_entities, list) else 0,
+            "input_relationships": (
+                len(input_relationships) if isinstance(input_relationships, list) else 0
+            ),
+            "input_facts": len(input_facts) if isinstance(input_facts, list) else 0,
+            "created_entities": result["saved"]["entities"],
+            "created_relationships": result["saved"]["relationships"],
+            "saved_facts": result["saved"]["facts"],
+            "duration_ms": _elapsed(started),
+            "outcome": "ok",
+        },
+    )
+    return result
+
+
 # --- read path ------------------------------------------------------------
 
 
-def query_memory(
-    user_id: Any,
+def _query_memory(
+    key: int,
     *,
     entity: Any = None,
     predicate: Any = None,
@@ -516,8 +665,7 @@ def query_memory(
     limit: Any = DEFAULT_LIMIT,
     connection: Optional[sqlite3.Connection] = None,
 ) -> Dict[str, Any]:
-    """Search one user's memory and return entities, relationships, and facts."""
-    key = _user_id(user_id)
+    """Scoped read path; the public wrapper adds identity and logging."""
     entity_name = _optional_text(entity, "entity", MAX_NAME)
     if entity_name and _is_self(entity_name):
         entity_name = SELF_ENTITY_NAME
@@ -530,28 +678,34 @@ def query_memory(
     with _db(connection) as db:
         entity_rows: List[sqlite3.Row]
         if entity_name:
-            found = db.execute(
+            found = _execute(
+                db,
                 """
                 SELECT * FROM entities
                 WHERE user_id = ? AND name = ? COLLATE NOCASE
                 ORDER BY created_at ASC
                 """,
                 (key, entity_name),
+                operation="entity.query",
             ).fetchall()
             entity_rows = list(found)
         elif query_text:
-            entity_rows = db.execute(
+            entity_rows = _execute(
+                db,
                 """
                 SELECT * FROM entities
                 WHERE user_id = ? AND name LIKE ? ESCAPE '\\'
                 ORDER BY created_at ASC LIMIT ?
                 """,
                 (key, _like(query_text), max_results),
+                operation="entity.query",
             ).fetchall()
         else:
-            entity_rows = db.execute(
+            entity_rows = _execute(
+                db,
                 "SELECT * FROM entities WHERE user_id = ? ORDER BY created_at ASC LIMIT ?",
                 (key, max_results),
+                operation="entity.query",
             ).fetchall()
 
         fact_clauses = ["f.user_id = ?", "e.user_id = ?"]
@@ -574,7 +728,8 @@ def query_memory(
             fact_params.append(now)
         fact_params.append(max_results)
 
-        fact_rows = db.execute(
+        fact_rows = _execute(
+            db,
             f"""
             SELECT f.*, e.name AS entity_name, e.entity_type AS entity_type
             FROM memory_facts f JOIN entities e ON e.id = f.entity_id
@@ -583,6 +738,7 @@ def query_memory(
             LIMIT ?
             """,
             fact_params,
+            operation="fact.query",
         ).fetchall()
 
         relationship_clauses = ["r.user_id = ?", "s.user_id = ?", "t.user_id = ?"]
@@ -599,7 +755,8 @@ def query_memory(
             relationship_params.extend((pattern, pattern, pattern))
         relationship_params.append(max_results)
 
-        relationship_rows = db.execute(
+        relationship_rows = _execute(
+            db,
             f"""
             SELECT r.*, s.name AS source_name, t.name AS target_name
             FROM relationships r
@@ -610,6 +767,7 @@ def query_memory(
             LIMIT ?
             """,
             relationship_params,
+            operation="relationship.query",
         ).fetchall()
 
     return {
@@ -617,6 +775,79 @@ def query_memory(
         "relationships": [_relationship_dict(row) for row in relationship_rows],
         "facts": [_fact_dict(row) for row in fact_rows],
     }
+
+
+def query_memory(
+    user_id: Any,
+    *,
+    entity: Any = None,
+    predicate: Any = None,
+    query: Any = None,
+    include_expired: bool = False,
+    limit: Any = DEFAULT_LIMIT,
+    connection: Optional[sqlite3.Connection] = None,
+) -> Dict[str, Any]:
+    """Search one user's memory and return entities, relationships, and facts."""
+    started = time.perf_counter()
+    key: Optional[int] = None
+    token = None
+    try:
+        key = _user_id(user_id)
+        token = _current_user.set(key)
+        result = _query_memory(
+            key,
+            entity=entity,
+            predicate=predicate,
+            query=query,
+            include_expired=include_expired,
+            limit=limit,
+            connection=connection,
+        )
+    except MemoryError as exc:
+        logger.warning(
+            "memory.query.invalid",
+            extra={
+                "event": "memory.query.invalid",
+                "user_id": key,
+                "error_type": type(exc).__name__,
+                "reason": str(exc),
+                "duration_ms": _elapsed(started),
+            },
+        )
+        raise
+    except Exception:
+        logger.exception(
+            "memory.query.error",
+            extra={
+                "event": "memory.query.error",
+                "user_id": key,
+                "duration_ms": _elapsed(started),
+            },
+        )
+        raise
+    finally:
+        if token is not None:
+            _current_user.reset(token)
+
+    logger.info(
+        "memory.query",
+        extra={
+            "event": "memory.query",
+            "user_id": key,
+            "has_entity": _has_text(entity),
+            "has_predicate": _has_text(predicate),
+            "has_query": _has_text(query),
+            "query_chars": len(query.strip()) if isinstance(query, str) else 0,
+            "include_expired": bool(include_expired),
+            "limit": limit,
+            "entity_count": len(result["entities"]),
+            "relationship_count": len(result["relationships"]),
+            "fact_count": len(result["facts"]),
+            "duration_ms": _elapsed(started),
+            "outcome": "ok",
+        },
+    )
+    return result
 
 
 # --- agent tool definitions ----------------------------------------------

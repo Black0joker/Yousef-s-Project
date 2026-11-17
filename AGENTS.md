@@ -14,6 +14,8 @@ behavior changes. This file covers workflow and non-obvious wiring.
   `before_request` auth middleware registered by `init_app(app)`.
 - `memory.py` — personal-memory schema, entity/relationship/fact CRUD, and the
   `save_memory` / `recall_memory` agent tool schemas and handlers.
+- `logging_config.py` — readable text logging by default, JSON option, request
+  IDs, request/user correlation, and rotating-file output.
 - `templates/` + `static/` — no build step. Tailwind and fonts load from CDNs,
   so the UI is unstyled offline. `theme.js` must stay before the stylesheet
   (test-enforced). Frontend JS is plain IIFEs, not ES modules.
@@ -40,10 +42,10 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 
 ## Gotchas
 
-- Importing `app.py` immediately runs `auth.init_db()` and `memory.init_db()`.
-  Tests set `TH_DB_PATH` and `JWT_SECRET` **before** importing `app`/`auth`
-  (see top of `tests/test_app.py`); otherwise `instance/app.db` is created as a
-  side effect.
+- Importing `app.py` immediately configures logging, then runs `auth.init_db()`
+  and `memory.init_db()`. Tests set `TH_DB_PATH`, `JWT_SECRET`, `LOG_LEVEL`, and
+  `LOG_FILE` **before** importing `app`/`auth` (see top of `tests/test_app.py`);
+  otherwise `instance/app.db` and `instance/app.log` are created as side effects.
 - `core/core.py` calls `load_dotenv()` at import, so a developer `.env` leaks
   into tests. `test_app.py` deliberately clears `TH_SYSTEM_PROMPT` so tests
   exercise `prompts/*.md`.
@@ -63,6 +65,20 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - Memory query results always include `created_at` for every entity,
   relationship, and fact; facts also include `observed_at` and `valid_until`.
   Keep those date fields when changing the row serializers.
+- Route every memory SQL statement through `_execute(...)`: it emits
+  `memory.sql` with normalized statement text, operation, and duration. Log SQL
+  with `?` placeholders only; never add bind values. `LOG_SQL=0` disables it.
+- Log through `logging.getLogger(__name__)` with structured `extra={...}`
+  fields (`event`, counts, timings, `outcome`), not interpolated message text.
+  `RequestContextFilter` adds `request_id`/`user_id` to records inside a Flask
+  request.
+- Never log chat text, entity names, predicates, fact values, query text, tool
+  arguments/results, JWTs, API keys, cookies, or request bodies. Tool logging
+  reports only name/ok/duration/error type; memory logging reports counts and
+  filter flags. `tests/test_logging.py` asserts this redaction.
+- `logging_config.init_request_logging(app)` must be registered before
+  `auth.init_app(app)` so requests rejected by auth still produce request logs.
+  `LOG_FILE=""` disables the rotating file; default is `instance/app.log`.
 - All routes are guarded by the auth middleware except `PUBLIC_PATHS` and
   `PUBLIC_PREFIXES` in `auth.py`. Add new public routes there; API paths get a
   JSON 401, page paths redirect to `/login`.
