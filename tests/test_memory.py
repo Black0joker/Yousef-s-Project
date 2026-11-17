@@ -448,12 +448,15 @@ class MemoryTestCase(unittest.TestCase):
             self.assertIn(f"`{managed}`", brief)
         self.assertIn(str(memory.MAX_ENTITIES_PER_CALL), brief)
         self.assertIn(str(memory.MAX_LIMIT), brief)
+        self.assertIn("get_name", brief)
 
-    def test_toolset_exposes_both_tools_and_binds_the_user(self):
-        schemas, handlers = memory.toolset(self.user_a, connection=self.conn)
+    def test_toolset_exposes_all_tools_and_binds_the_user(self):
+        schemas, handlers = memory.toolset(
+            self.user_a, connection=self.conn, display_name="Youssef Smith"
+        )
         names = [schema["function"]["name"] for schema in schemas]
-        self.assertEqual(names, ["save_memory", "recall_memory"])
-        self.assertEqual(set(handlers), {"save_memory", "recall_memory"})
+        self.assertEqual(names, ["save_memory", "recall_memory", "get_name"])
+        self.assertEqual(set(handlers), {"save_memory", "recall_memory", "get_name"})
 
         handlers["save_memory"](
             facts=[{"entity": "Sara", "predicate": "age", "value": 20}]
@@ -461,6 +464,17 @@ class MemoryTestCase(unittest.TestCase):
         result = handlers["recall_memory"](entity="Sara")
         self.assertEqual(result["facts"][0]["value"], 20)
         self.assertEqual(memory.query_memory(self.user_b, connection=self.conn)["facts"], [])
+
+        # get_name ignores whatever the model passes and returns the bound account name
+        self.assertEqual(
+            handlers["get_name"](user_id=self.user_b),
+            {"name": "Youssef Smith", "first_name": "Youssef"},
+        )
+
+    def test_get_name_without_a_name_raises(self):
+        handlers = memory.handlers(self.user_a, connection=self.conn)
+        with self.assertRaises(memory.MemoryError):
+            handlers["get_name"]()
 
 
 if __name__ == "__main__":

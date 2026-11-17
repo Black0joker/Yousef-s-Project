@@ -62,6 +62,11 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - The memory tools use raw OpenAI schemas, not `@tool`, because their arguments
   contain nested entity/relationship/fact objects. Add new tools through
   `memory.toolset()` and the handler registry.
+- `get_name` is a no-argument tool: the handler is closed over the account name
+  taken from the request's JWT claims (`memory_toolset()` in `app.py` passes
+  `display_name`, falling back to the DB for older tokens). It must never read a
+  user id or name supplied by the model, and `tests/test_memory.py` asserts a
+  model-supplied `user_id` is ignored.
 - Memory query results always include `created_at` for every entity,
   relationship, and fact; facts also include `observed_at` and `valid_until`.
   Keep those date fields when changing the row serializers.
@@ -97,8 +102,10 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - Adding a language requires coordinated edits to `LANGUAGE_FILES`,
   `LANGUAGE_ALIASES`, and `LANGUAGE_DIRECTIVES` in `app.py`, plus `STRINGS` and
   `LANG_ALIASES` in `static/chat.js`. `TH_SYSTEM_PROMPT` overrides all languages.
-- Both prompt files contain a “Memory Tool Protocol” naming `save_memory` and
-  `recall_memory`; keep those names in sync with `memory.py` and `static/chat.js`.
+- Both prompt files contain a “Memory Tool Protocol” naming `save_memory`,
+  `recall_memory`, and `get_name`; keep those names in sync with `memory.py`,
+  the generated `prompt_brief()`, and the `STRINGS.tool*` labels in
+  `static/chat.js`.
 - `memory.prompt_brief()` is generated from the schema constants and appended to
   every system prompt by `app.system_prompt()`, including when
   `TH_SYSTEM_PROMPT` overrides the persona. Add or rename a tool field in the

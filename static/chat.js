@@ -37,6 +37,8 @@
       toolFound: "Memory searched",
       toolFailed: "Memory tool failed",
       toolGeneric: "Using tool...",
+      toolAccount: "Checking your account...",
+      toolAccountDone: "Account checked",
     },
     ar: {
       code: "AR",
@@ -57,6 +59,8 @@
       toolFound: "تم البحث في الذاكرة",
       toolFailed: "تعذر استخدام أداة الذاكرة",
       toolGeneric: "جارٍ استخدام الأداة...",
+      toolAccount: "جارٍ التحقق من حسابك...",
+      toolAccountDone: "تم التحقق من الحساب",
     },
   };
 
@@ -87,6 +91,7 @@
   function toolLabel(name) {
     if (name === "save_memory") return str().toolSaving;
     if (name === "recall_memory") return str().toolSearching;
+    if (name === "get_name") return str().toolAccount;
     return str().toolGeneric;
   }
 
@@ -94,6 +99,7 @@
     if (!ok) return str().toolFailed;
     if (name === "save_memory") return str().toolSaved;
     if (name === "recall_memory") return str().toolFound;
+    if (name === "get_name") return str().toolAccountDone;
     return str().toolGeneric;
   }
 

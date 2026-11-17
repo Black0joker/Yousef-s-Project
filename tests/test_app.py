@@ -441,8 +441,8 @@ class TestMemoryTools(AppTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["reply"], "ok")
         names = [schema["function"]["name"] for schema in fake.tools]
-        self.assertEqual(names, ["save_memory", "recall_memory"])
-        self.assertEqual(set(fake.handlers), {"save_memory", "recall_memory"})
+        self.assertEqual(names, ["save_memory", "recall_memory", "get_name"])
+        self.assertEqual(set(fake.handlers), {"save_memory", "recall_memory", "get_name"})
 
     def test_stream_forwards_tool_lifecycle_without_arguments(self):
         events = [
@@ -469,7 +469,27 @@ class TestMemoryTools(AppTestCase):
         self.assertEqual(frames[2], {"delta": "Saved."})
         self.assertTrue(frames[3]["done"])
         self.assertEqual([schema["function"]["name"] for schema in fake.tools],
-                         ["save_memory", "recall_memory"])
+                         ["save_memory", "recall_memory", "get_name"])
+
+    def test_stream_get_name_returns_the_jwt_name(self):
+        class ToolClient:
+            def run_tools_events(self, messages=None, **params):
+                result = params["handlers"]["get_name"]()
+                yield {"type": "delta", "content": result["name"]}
+                yield {"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []}
+
+        patcher = patch.object(app_module, "get_client", lambda: ToolClient())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "What is my name?"}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        frames = parse_sse(response.get_data(as_text=True))
+        self.assertIn({"delta": "Youssef Smith"}, frames)
 
     def test_stream_tool_handler_writes_memory_for_current_user(self):
         class ToolClient:

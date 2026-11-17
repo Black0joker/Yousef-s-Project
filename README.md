@@ -208,11 +208,15 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 ## Personal memory (agent tools)
 
-The chat model can persist durable facts in the same SQLite database through
-two tools:
+The chat model can persist durable facts in the same SQLite database, and read
+the account name, through three tools:
 
 - **`save_memory`** — batch saves entities, relationships, and facts.
 - **`recall_memory`** — searches the signed-in user's saved memory.
+- **`get_name`** — returns the signed-in user's name from their JWT claims (the
+  database is only a fallback for older tokens). It takes no arguments; the
+  handler is bound per request and ignores anything the model passes, so it can
+  never return another account's name.
 
 The tables mirror the product schema, translated to SQLite: UUIDs are `TEXT`,
 JSONB becomes JSON `TEXT`, and timestamps are ISO-8601 UTC `TEXT`. `user_id`
@@ -265,8 +269,8 @@ data: {"delta":"Saved."}
 ```
 
 `static/chat.js` turns those into localized status text (“Saving memory...”,
-“Searching memory...”, “Memory saved”) and never stores the status in chat
-history. Tool arguments and results are not sent to the browser. The configured
+“Searching memory...”, “Memory saved”, “Checking your account...”) and never
+stores the status in chat history. Tool arguments and results are not sent to the browser. The configured
 model must support tool calling (`TH_MODEL`).
 
 ## Logging

@@ -206,7 +206,18 @@ def memory_toolset():
     user_id = claims.get("id")
     if user_id is None:
         raise auth.AuthError("unauthorized", "Authentication required.", 401)
-    tools, handlers = memory.toolset(user_id, connection=auth.get_db())
+
+    # get_name answers from the request's JWT claims; the database is only a
+    # fallback for tokens issued before the claim existed.
+    display_name = (claims.get("full_name") or "").strip()
+    if not display_name:
+        display_name = (auth.get_user_by_id(user_id) or {}).get("full_name") or ""
+
+    tools, handlers = memory.toolset(
+        user_id,
+        connection=auth.get_db(),
+        display_name=display_name,
+    )
     return tools, log_tool_handlers(handlers, user_id=user_id)
 
 

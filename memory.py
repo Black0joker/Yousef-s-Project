@@ -1062,7 +1062,26 @@ RECALL_MEMORY_SCHEMA: Dict[str, Any] = {
 }
 
 
-TOOL_SCHEMAS: Sequence[Dict[str, Any]] = (SAVE_MEMORY_SCHEMA, RECALL_MEMORY_SCHEMA)
+GET_NAME_SCHEMA: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "get_name",
+        "description": (
+            "Return the name of the signed-in user. Call this when the user asks who they "
+            "are or what their name is, or when greeting them by name would feel natural. "
+            "It takes no arguments: the server always returns the authenticated account's "
+            "own name, never another user's."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+
+TOOL_SCHEMAS: Sequence[Dict[str, Any]] = (
+    SAVE_MEMORY_SCHEMA,
+    RECALL_MEMORY_SCHEMA,
+    GET_NAME_SCHEMA,
+)
 
 
 def prompt_brief() -> str:
@@ -1086,14 +1105,24 @@ Server-managed — never send these and never invent them: `id`, `user_id`, `cre
 
 Limits: {MAX_ENTITIES_PER_CALL} entities, {MAX_RELATIONSHIPS_PER_CALL} relationships, and {MAX_FACTS_PER_CALL} facts per `save_memory` call. `recall_memory` accepts `entity`, `predicate`, `query` (max {MAX_QUERY} chars), `include_expired`, and `limit` (1–{MAX_LIMIT}, default {DEFAULT_LIMIT}). Prefer one batched call over several small ones.
 
-If a key is not listed above, it is not a parameter — call `recall_memory` or ask the user instead of guessing."""
+If a key is not listed above, it is not a parameter — call `recall_memory` or ask the user instead of guessing.
+
+`get_name` takes no arguments and returns the signed-in user's own name from their account. Call it when asked who they are or what their name is; do not use `recall_memory` for that."""
 
 
 def handlers(
     user_id: Any,
     connection: Optional[sqlite3.Connection] = None,
+    display_name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build tool handlers bound to one authenticated user."""
+    """Build tool handlers bound to one authenticated user.
+
+    ``display_name`` is the account name taken from the request's JWT claims (a
+    database fallback is applied by the caller). The model can read it through
+    ``get_name`` but can never supply or change it.
+    """
+
+    name = (display_name or "").strip()
 
     def save(**kwargs: Any) -> Dict[str, Any]:
         return save_memory(user_id, kwargs, connection=connection)
@@ -1101,15 +1130,23 @@ def handlers(
     def recall(**kwargs: Any) -> Dict[str, Any]:
         return query_memory(user_id, connection=connection, **kwargs)
 
-    return {"save_memory": save, "recall_memory": recall}
+    def get_name(**_: Any) -> Dict[str, Any]:
+        if not name:
+            raise MemoryError("No name is available for this account.")
+        return {"name": name, "first_name": name.split(" ")[0]}
+
+    return {"save_memory": save, "recall_memory": recall, "get_name": get_name}
 
 
 def toolset(
     user_id: Any,
     connection: Optional[sqlite3.Connection] = None,
+    display_name: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Return ``(schemas, handlers)`` ready for ``TokenHarbor.run_tools*``."""
     _user_id(user_id)  # fail fast on a missing/invalid request identity
-    return [dict(SAVE_MEMORY_SCHEMA), dict(RECALL_MEMORY_SCHEMA)], handlers(
-        user_id, connection=connection
-    )
+    return [
+        dict(SAVE_MEMORY_SCHEMA),
+        dict(RECALL_MEMORY_SCHEMA),
+        dict(GET_NAME_SCHEMA),
+    ], handlers(user_id, connection=connection, display_name=display_name)
