@@ -14,8 +14,9 @@ streaming, conversation history, tool calling, and typed error handling.
 
 ```
 .
-├── app.py                 # Flask app: pages, auth API, chat API
+├── app.py                 # Flask app: pages, auth API, chat API, memory tools
 ├── auth.py                # users, password hashing, JWTs, auth middleware
+├── memory.py              # personal memory schema, queries, agent tools
 ├── templates/
 │   ├── login.html         # email + password
 │   ├── register.html      # first name, last name, email, password
@@ -36,6 +37,7 @@ streaming, conversation history, tool calling, and typed error handling.
 │   ├── test_auth.py       # registration, login, JWT and middleware tests
 │   ├── test_app.py        # Flask app tests (stubbed client, no network)
 │   ├── test_core.py       # client unit tests (local mock gateway, no network)
+│   ├── test_memory.py     # entities, relationships, facts, tool handlers
 │   └── integration/
 │       └── test_integration.py   # live tests against tokenharbor.ai
 ├── instance/app.db        # SQLite user database (created at runtime, gitignored)
@@ -79,6 +81,9 @@ How it works:
 5. **`POST /api/chat/stream`** — the server calls Token Harbor and streams the
    reply back token by token over SSE.
 6. **`POST /api/chat`** — non-streaming fallback returning `{"reply": "..."}`.
+7. **Memory tools** — the model can save and recall personal facts. Tool
+   activity is streamed as transient status frames, so the UI can show
+   “Saving memory...” without inventing assistant text.
 
 ## Accounts & authentication
 
@@ -189,6 +194,62 @@ Generate a signing key with:
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
+
+## Personal memory (agent tools)
+
+The chat model can persist durable facts in the same SQLite database through
+two tools:
+
+- **`save_memory`** — batch saves entities, relationships, and facts.
+- **`recall_memory`** — searches the signed-in user's saved memory.
+
+The tables mirror the product schema, translated to SQLite: UUIDs are `TEXT`,
+JSONB becomes JSON `TEXT`, and timestamps are ISO-8601 UTC `TEXT`. `user_id`
+stays an `INTEGER` foreign key to `users.id`. Tables are created automatically
+on startup, so an existing `instance/app.db` gains them without a manual
+migration. Foreign keys are enabled by `auth.connect()`.
+
+For example, “My sister Sara is 20” can be saved as:
+
+```jsonc
+{
+  "entities": [{"name": "Sara", "entity_type": "Person"}],
+  "relationships": [
+    {"source_entity": "Current User", "target_entity": "Sara", "relationship_type": "Sister"}
+  ],
+  "facts": [
+    {"entity": "Sara", "predicate": "age", "value": 20, "confidence": 1.0}
+  ]
+}
+```
+
+- `Current User` is a per-user self entity. The model never receives a user id;
+  handlers are bound to the authenticated account, and every query is scoped by
+  `user_id`.
+- Facts are append-only. Pass `"replace": true` on a fact to set `valid_until`
+  on older values for the same entity and predicate. `recall_memory` hides
+  expired facts unless `include_expired` is true.
+- `value` can be any JSON scalar, array, or object.
+- Every returned entity, relationship, and fact includes its `created_at`.
+  Facts also include `observed_at` and `valid_until`.
+- The system prompts include a memory protocol instructing the model to recall
+  before answering personal questions and save only information the user
+  explicitly stated.
+
+The streaming endpoint emits tool lifecycle frames alongside text:
+
+```text
+data: {"tool":{"name":"save_memory","status":"start"}}
+
+data: {"tool":{"name":"save_memory","status":"end","ok":true}}
+
+data: {"delta":"Saved."}
+```
+
+`static/chat.js` turns those into localized status text (“Saving memory...”,
+“Searching memory...”, “Memory saved”) and never stores the status in chat
+history. Tool arguments and results are not sent to the browser. The configured
+model must support tool calling (`TH_MODEL`).
 
 The sections below describe the `core` client that the app is built on.
 
@@ -352,9 +413,11 @@ python -m unittest discover -s tests -v
 python -m unittest discover -s tests/integration -v
 ```
 
-The offline suite covers the `core` client, the Flask app, and authentication:
-registration, duplicate/case-insensitive emails, validation, login, JWT claims
-and expiry, the middleware, and the per-message delete/prompt rules.
+The offline suite covers the `core` client, the Flask app, authentication, and
+personal memory: registration, duplicate/case-insensitive emails, validation,
+login, JWT claims and expiry, the middleware, the per-message delete/prompt
+rules, memory saves/queries, user isolation, replacement/expiry behavior, and
+tool lifecycle events.
 
 Integration tests default to the free model `deepseek-v4.1-flash:free` so they
 don't spend your balance. Override with `TH_TEST_MODEL`:
@@ -374,6 +437,7 @@ TH_TEST_MODEL=qwen3.7-max python -m unittest discover -s tests/integration -v
 | `.stream_events(...)` | Yield `delta` / `reasoning` / `done` (with `tool_calls`) |
 | `.ask(...)` / `.stream_ask(...)` | History-aware call helpers |
 | `.run_tools(...)` / `.run_tools_stream(...)` | Full tool-calling loop |
+| `.run_tools_events(...)` | Tool loop with `delta` / `reasoning` / `tool_start` / `tool_end` / `done` events |
 | `@tool` / `function_tool` | Build a tool schema from a function |
 | `parse_tool_calls(...)` | Convert raw `tool_calls` to `ToolCall` objects |
 | `.system/.user/.assistant/.tool` | Append a message |

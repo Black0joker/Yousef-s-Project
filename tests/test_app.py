@@ -46,6 +46,9 @@ class FakeClient:
         self.chat_error = chat_error
         self.stream_error = stream_error
         self.payloads = []
+        self.calls = []
+        self.tools = None
+        self.handlers = None
 
     def chat(self, messages=None, **params):
         self.payloads.append(messages)
@@ -53,8 +56,33 @@ class FakeClient:
             raise self.chat_error
         return self.reply
 
+    def run_tools(self, content=None, *, messages=None, **params):
+        # Chat routes must pass the conversation as messages=..., never as content.
+        assert content is None, "run_tools received content instead of messages"
+        assert messages is not None, "run_tools received no messages"
+        self.calls.append({"content": content, "messages": messages})
+        self.payloads.append(messages)
+        self.tools = params.get("tools")
+        self.handlers = params.get("handlers")
+        if self.chat_error:
+            raise self.chat_error
+        return self.reply
+
     def stream_events(self, messages=None, **params):
         self.payloads.append(messages)
+        for event in self.events:
+            yield event
+        if self.stream_error:
+            raise self.stream_error
+
+    def run_tools_events(self, content=None, *, messages=None, **params):
+        # Same call contract as run_tools.
+        assert content is None, "run_tools_events received content instead of messages"
+        assert messages is not None, "run_tools_events received no messages"
+        self.calls.append({"content": content, "messages": messages})
+        self.payloads.append(messages)
+        self.tools = params.get("tools")
+        self.handlers = params.get("handlers")
         for event in self.events:
             yield event
         if self.stream_error:
@@ -163,6 +191,35 @@ class TestSystemPrompt(AppTestCase):
         self.assertEqual(payload[0]["role"], "system")
         self.assertEqual(payload[0]["content"], app_module.system_prompt())
         self.assertEqual(payload[1], {"role": "user", "content": "hello"})
+
+    def test_chat_passes_messages_not_content(self):
+        fake = self.use_client()
+        response = self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        call = fake.calls[-1]
+        self.assertIsNone(call["content"])
+        self.assertEqual(call["messages"][0]["role"], "system")
+        self.assertEqual(call["messages"][1], {"role": "user", "content": "hello"})
+
+    def test_stream_passes_messages_not_content(self):
+        fake = self.use_client(
+            FakeClient(events=[{"type": "done", "finish_reason": "stop",
+                                "usage": None, "tool_calls": []}])
+        )
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "مرحبا"}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        call = fake.calls[-1]
+        self.assertIsNone(call["content"])
+        self.assertEqual(call["messages"][0]["role"], "system")
+        self.assertEqual(call["messages"][1], {"role": "user", "content": "مرحبا"})
 
     def test_system_prompt_can_be_overridden_by_env(self):
         os.environ["TH_SYSTEM_PROMPT"] = "You are a pirate."
@@ -362,6 +419,108 @@ class TestStreaming(AppTestCase):
         frames = parse_sse(response.get_data(as_text=True))
         self.assertEqual(frames[0], {"delta": "par"})
         self.assertEqual(frames[-1]["error"]["code"], "service_unavailable")
+
+
+class TestMemoryTools(AppTestCase):
+    def test_chat_uses_tool_loop_with_memory_tools(self):
+        fake = self.use_client()
+        response = self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "My sister Sara is 20."}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["reply"], "ok")
+        names = [schema["function"]["name"] for schema in fake.tools]
+        self.assertEqual(names, ["save_memory", "recall_memory"])
+        self.assertEqual(set(fake.handlers), {"save_memory", "recall_memory"})
+
+    def test_stream_forwards_tool_lifecycle_without_arguments(self):
+        events = [
+            {"type": "tool_start", "name": "save_memory", "id": "call_1"},
+            {"type": "tool_end", "name": "save_memory", "id": "call_1", "ok": True},
+            {"type": "delta", "content": "Saved."},
+            {"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []},
+        ]
+        fake = self.use_client(FakeClient(events=events))
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "Remember that."}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        frames = parse_sse(response.get_data(as_text=True))
+        self.assertEqual(
+            frames[0], {"tool": {"name": "save_memory", "status": "start"}}
+        )
+        self.assertEqual(
+            frames[1],
+            {"tool": {"name": "save_memory", "status": "end", "ok": True}},
+        )
+        self.assertEqual(frames[2], {"delta": "Saved."})
+        self.assertTrue(frames[3]["done"])
+        self.assertEqual([schema["function"]["name"] for schema in fake.tools],
+                         ["save_memory", "recall_memory"])
+
+    def test_stream_tool_handler_writes_memory_for_current_user(self):
+        class ToolClient:
+            def run_tools_events(self, messages=None, **params):
+                handlers = params["handlers"]
+                yield {"type": "tool_start", "name": "save_memory", "id": "call_1"}
+                handlers["save_memory"](
+                    entities=[{"name": "Sara", "entity_type": "Person"}],
+                    facts=[{"entity": "Sara", "predicate": "age", "value": 20}],
+                )
+                yield {"type": "tool_end", "name": "save_memory", "id": "call_1", "ok": True}
+                yield {"type": "delta", "content": "Saved."}
+                yield {"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []}
+
+        patcher = patch.object(app_module, "get_client", lambda: ToolClient())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        me = self.http.get("/api/auth/me", headers=self.headers).get_json()["user"]
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "My sister Sara is 20."}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Saved.", response.data)
+
+        conn = auth.connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT f.value, f.predicate, e.name
+                FROM memory_facts f JOIN entities e ON e.id = f.entity_id
+                WHERE f.user_id = ? AND e.name = ?
+                """,
+                (me["id"], "Sara"),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["predicate"], "age")
+        self.assertEqual(json.loads(row["value"]), 20)
+
+    def test_failed_tool_is_reported_as_not_ok(self):
+        events = [
+            {"type": "tool_start", "name": "recall_memory", "id": "call_1"},
+            {"type": "tool_end", "name": "recall_memory", "id": "call_1", "ok": False},
+            {"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []},
+        ]
+        self.use_client(FakeClient(events=events))
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "What do you remember?"}]},
+            headers=self.headers,
+        )
+        frames = parse_sse(response.get_data(as_text=True))
+        self.assertEqual(
+            frames[1],
+            {"tool": {"name": "recall_memory", "status": "end", "ok": False}},
+        )
 
 
 if __name__ == "__main__":

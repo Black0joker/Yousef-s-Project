@@ -704,6 +704,83 @@ class TestToolCalling(ClientTestCase):
         self.assertEqual(assistant["tool_calls"][0]["function"]["arguments"], '{"city": "Tokyo"}')
         self.assertIn("21", client.messages[2]["content"])
 
+    def test_run_tools_events_emits_tool_lifecycle(self):
+        seen = []
+
+        @tool
+        def get_weather(city: str) -> dict:
+            """Get the weather."""
+            seen.append(city)
+            return {"city": city, "temp_c": 21}
+
+        def responder(n, call):
+            if n == 1:
+                return {
+                    "sse": True,
+                    "chunks": [
+                        sse_chunk("Checking. "),
+                        sse_tool_chunk(0, call_id="call_e", name="get_weather"),
+                        sse_tool_chunk(0, arguments='{"city": "Oslo"}'),
+                        sse_chunk("", finish_reason="tool_calls"),
+                        "data: [DONE]\n\n",
+                    ],
+                }
+            return {
+                "sse": True,
+                "chunks": [
+                    sse_chunk("It is 21C"),
+                    sse_chunk(".", finish_reason="stop"),
+                    "data: [DONE]\n\n",
+                ],
+            }
+
+        httpd, base = self.start_server(responder)
+        client = self.new_client(base=base)
+        events = list(client.run_tools_events("Weather in Oslo?", tools=[get_weather]))
+        types = [event["type"] for event in events]
+        self.assertEqual(types.count("done"), 1)
+        self.assertEqual(types[0], "delta")
+        start = types.index("tool_start")
+        end = types.index("tool_end")
+        self.assertLess(start, end)
+        self.assertEqual(events[start]["name"], "get_weather")
+        self.assertEqual(events[start]["id"], "call_e")
+        self.assertTrue(events[end]["ok"])
+        self.assertEqual(seen, ["Oslo"])
+        self.assertEqual(
+            [m["role"] for m in client.messages],
+            ["user", "assistant", "tool", "assistant"],
+        )
+
+    def test_run_tools_events_marks_failed_tool(self):
+        @tool
+        def broken_tool(city: str) -> str:
+            """Always fails."""
+            raise ValueError("nope")
+
+        def responder(n, call):
+            if n == 1:
+                return {
+                    "sse": True,
+                    "chunks": [
+                        sse_tool_chunk(0, call_id="call_f", name="broken_tool"),
+                        sse_tool_chunk(0, arguments='{"city": "Oslo"}'),
+                        sse_chunk("", finish_reason="tool_calls"),
+                        "data: [DONE]\n\n",
+                    ],
+                }
+            return {
+                "sse": True,
+                "chunks": [sse_chunk("Sorry."), sse_chunk("", finish_reason="stop"), "data: [DONE]\n\n"],
+            }
+
+        httpd, base = self.start_server(responder)
+        client = self.new_client(base=base)
+        events = list(client.run_tools_events("Go", tools=[broken_tool]))
+        end = next(event for event in events if event["type"] == "tool_end")
+        self.assertFalse(end["ok"])
+        self.assertIn("ValueError: nope", client.messages[2]["content"])
+
 
 # --- error handling -------------------------------------------------------
 

@@ -2,13 +2,14 @@
 
 Routes
 ------
-``GET  /``                 welcome page: enter your name (saved in localStorage)
+``GET  /``                 redirects to the login page
 ``GET  /chat``             chat page: greeting + message input
-``POST /api/chat/stream``  streamed reply over SSE
+``POST /api/chat/stream``  streamed reply over SSE, including tool lifecycle
 ``POST /api/chat``         non-streaming JSON fallback
 
 The browser never sees the API key: all calls go through this server, which
-prepends the system prompt as the message at index 0.
+prepends the system prompt as the message at index 0. Memory tool handlers are
+bound to the authenticated user, so the model never receives a user id.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from flask import Flask, Response, jsonify, redirect, render_template, request, stream_with_context
 
 import auth
+import memory
 from core import Message, TokenHarbor, TokenHarborError
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -65,8 +67,9 @@ LANGUAGE_DIRECTIVES = {
 
 app = Flask(__name__)
 
-# register the users table, the teardown handler and the auth middleware
+# register the users/memory tables, the teardown handler and auth middleware
 auth.init_db()
+memory.init_db()
 auth.init_app(app)
 
 
@@ -134,6 +137,15 @@ def get_client() -> TokenHarbor:
         raise _client_error
     assert _client is not None
     return _client
+
+
+def memory_toolset():
+    """Memory tool schemas/handlers bound to the authenticated user."""
+    claims = auth.current_user() or {}
+    user_id = claims.get("id")
+    if user_id is None:
+        raise auth.AuthError("unauthorized", "Authentication required.", 401)
+    return memory.toolset(user_id, connection=auth.get_db())
 
 
 # --- message handling -----------------------------------------------------
@@ -271,8 +283,9 @@ def api_chat():
     except TokenHarborError as exc:
         return jsonify(error_body(exc)), 500
 
+    tools, handlers = memory_toolset()
     try:
-        reply = client.chat(payload)
+        reply = client.run_tools(messages=payload, tools=tools, handlers=handlers)
     except TokenHarborError as exc:
         return jsonify(error_body(exc)), error_status(exc)
 
@@ -293,13 +306,27 @@ def api_chat_stream():
     except TokenHarborError as exc:
         return jsonify(error_body(exc)), 500
 
+    tools, handlers = memory_toolset()
+
     def generate():
         try:
-            for event in client.stream_events(payload):
+            for event in client.run_tools_events(messages=payload, tools=tools, handlers=handlers):
                 if event["type"] == "delta" and event.get("content"):
                     yield sse({"delta": event["content"]})
                 elif event["type"] == "reasoning" and event.get("content"):
                     yield sse({"reasoning": event["content"]})
+                elif event["type"] == "tool_start":
+                    yield sse({"tool": {"name": event.get("name"), "status": "start"}})
+                elif event["type"] == "tool_end":
+                    yield sse(
+                        {
+                            "tool": {
+                                "name": event.get("name"),
+                                "status": "end",
+                                "ok": bool(event.get("ok", True)),
+                            }
+                        }
+                    )
                 elif event["type"] == "done":
                     yield sse(
                         {
