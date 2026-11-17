@@ -24,9 +24,13 @@ os.environ["TH_DB_PATH"] = os.path.join(_TMPDIR, "app.db")
 os.environ["JWT_SECRET"] = "test-secret-do-not-use-in-production"
 # ignore any TH_SYSTEM_PROMPT from the developer's .env so the prompts/ files are used
 os.environ["TH_SYSTEM_PROMPT"] = ""
+# keep test runs quiet and avoid writing instance/app.log
+os.environ["LOG_LEVEL"] = "CRITICAL"
+os.environ["LOG_FILE"] = ""
 
 import app as app_module  # noqa: E402
 import auth  # noqa: E402
+import memory  # noqa: E402
 from core import TokenHarborError  # noqa: E402
 
 CREDENTIALS = {
@@ -107,6 +111,7 @@ class AppTestCase(unittest.TestCase):
     def setUp(self):
         os.environ["TH_DB_PATH"] = os.path.join(_TMPDIR, "app.db")
         auth.init_db()
+        memory.init_db()
         connection = auth.connect()
         connection.execute("DELETE FROM users")
         connection.commit()
@@ -503,6 +508,45 @@ class TestMemoryTools(AppTestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row["predicate"], "age")
         self.assertEqual(json.loads(row["value"]), 20)
+
+    def test_tool_logs_do_not_include_arguments_or_results(self):
+        def save_memory(**kwargs):
+            return {"saved": "TOP_SECRET_RESULT"}
+
+        wrapped = app_module.log_tool_handlers({"save_memory": save_memory}, user_id=7)
+        with self.assertLogs("app", level="INFO") as captured:
+            wrapped["save_memory"](secret="TOP_SECRET_ARGUMENT")
+
+        events = [getattr(record, "event", None) for record in captured.records]
+        self.assertIn("tool.start", events)
+        self.assertIn("tool.end", events)
+        self.assertTrue(all(getattr(record, "tool", None) == "save_memory"
+                            for record in captured.records))
+        self.assertTrue(all(getattr(record, "user_id", None) == 7
+                            for record in captured.records))
+        rendered = "\n".join(f"{record.getMessage()} {record.__dict__}"
+                             for record in captured.records)
+        self.assertNotIn("TOP_SECRET_ARGUMENT", rendered)
+        self.assertNotIn("TOP_SECRET_RESULT", rendered)
+
+    def test_tool_errors_log_type_but_not_exception_text(self):
+        def broken_tool(**kwargs):
+            raise ValueError("TOP_SECRET_ERROR")
+
+        wrapped = app_module.log_tool_handlers({"broken_tool": broken_tool})
+        with self.assertLogs("app", level="WARNING") as captured:
+            with self.assertRaises(ValueError):
+                wrapped["broken_tool"](secret="TOP_SECRET_ARGUMENT")
+
+        self.assertEqual([getattr(record, "event", None) for record in captured.records],
+                         ["tool.error"])
+        record = captured.records[0]
+        self.assertEqual(record.tool, "broken_tool")
+        self.assertFalse(record.ok)
+        self.assertEqual(record.error_type, "ValueError")
+        rendered = f"{record.getMessage()} {record.__dict__}"
+        self.assertNotIn("TOP_SECRET_ARGUMENT", rendered)
+        self.assertNotIn("TOP_SECRET_ERROR", rendered)
 
     def test_failed_tool_is_reported_as_not_ok(self):
         events = [

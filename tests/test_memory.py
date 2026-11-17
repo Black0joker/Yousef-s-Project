@@ -353,6 +353,60 @@ class MemoryTestCase(unittest.TestCase):
         ).fetchone()["n"]
         self.assertEqual(count, 0)
 
+    def test_memory_logs_are_structured_and_redacted(self):
+        with self.assertLogs("memory", level="INFO") as captured:
+            memory.save_memory(
+                self.user_a,
+                {
+                    "facts": [
+                        {
+                            "entity": "TOP_SECRET_ENTITY",
+                            "predicate": "SECRET_PREDICATE",
+                            "value": "TOP_SECRET_VALUE",
+                        }
+                    ]
+                },
+                connection=self.conn,
+            )
+            memory.query_memory(
+                self.user_a,
+                entity="TOP_SECRET_ENTITY",
+                query="TOP_SECRET_QUERY",
+                connection=self.conn,
+            )
+
+        records = captured.records
+        events = [getattr(record, "event", None) for record in records]
+        self.assertIn("memory.save", events)
+        self.assertIn("memory.query", events)
+        self.assertIn("memory.sql", events)
+        self.assertTrue(all(getattr(record, "user_id", None) == self.user_a for record in records))
+
+        sql_records = [record for record in records if record.event == "memory.sql"]
+        self.assertTrue(any(record.operation == "fact.query" for record in sql_records))
+        self.assertTrue(all("?" in record.sql for record in sql_records))
+
+        rendered = "\n".join(f"{record.getMessage()} {record.__dict__}" for record in records)
+        for secret in (
+            "TOP_SECRET_ENTITY",
+            "SECRET_PREDICATE",
+            "TOP_SECRET_VALUE",
+            "TOP_SECRET_QUERY",
+        ):
+            self.assertNotIn(secret, rendered)
+
+    def test_invalid_memory_operations_log_warnings(self):
+        with self.assertLogs("memory", level="WARNING") as captured:
+            with self.assertRaises(memory.MemoryError):
+                memory.save_memory(self.user_a, {}, connection=self.conn)
+            with self.assertRaises(memory.MemoryError):
+                memory.query_memory(self.user_a, limit=True, connection=self.conn)
+
+        events = [getattr(record, "event", None) for record in captured.records]
+        self.assertIn("memory.save.invalid", events)
+        self.assertIn("memory.query.invalid", events)
+        self.assertTrue(all(getattr(record, "reason", None) for record in captured.records))
+
     def test_toolset_exposes_both_tools_and_binds_the_user(self):
         schemas, handlers = memory.toolset(self.user_a, connection=self.conn)
         names = [schema["function"]["name"] for schema in schemas]
