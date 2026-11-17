@@ -30,6 +30,12 @@
       toggleLang: "Switch language",
       deleteReply: "Delete this message and its reply",
       deleteOne: "Delete this message",
+      toolSaving: "Saving memory...",
+      toolSearching: "Searching memory...",
+      toolSaved: "Memory saved",
+      toolFound: "Memory searched",
+      toolFailed: "Memory tool failed",
+      toolGeneric: "Using tool...",
     },
     ar: {
       code: "AR",
@@ -43,6 +49,12 @@
       toggleLang: "تغيير اللغة",
       deleteReply: "احذف هذه الرسالة وردها",
       deleteOne: "احذف هذه الرسالة",
+      toolSaving: "جارٍ حفظ الذاكرة...",
+      toolSearching: "جارٍ البحث في الذاكرة...",
+      toolSaved: "تم حفظ الذاكرة",
+      toolFound: "تم البحث في الذاكرة",
+      toolFailed: "تعذر استخدام أداة الذاكرة",
+      toolGeneric: "جارٍ استخدام الأداة...",
     },
   };
 
@@ -68,6 +80,19 @@
 
   function str() {
     return STRINGS[lang] || STRINGS.en;
+  }
+
+  function toolLabel(name) {
+    if (name === "save_memory") return str().toolSaving;
+    if (name === "recall_memory") return str().toolSearching;
+    return str().toolGeneric;
+  }
+
+  function toolDoneLabel(name, ok) {
+    if (!ok) return str().toolFailed;
+    if (name === "save_memory") return str().toolSaved;
+    if (name === "recall_memory") return str().toolFound;
+    return str().toolGeneric;
   }
 
   var lang = loadLanguage();
@@ -276,13 +301,20 @@
     var meta = el("div", "flex items-center gap-1.5 mt-1.5 ms-1");
     meta.appendChild(timeLabel());
 
+    // transient tool activity; never written to chat history
+    var activity = el("div", "mt-1.5 ms-1 text-xs font-label text-slate-400 dark:text-slate-500");
+    activity.setAttribute("role", "status");
+    activity.setAttribute("aria-live", "polite");
+    activity.hidden = true;
+
     col.appendChild(bubble);
+    col.appendChild(activity);
     col.appendChild(meta);
     row.appendChild(avatar);
     row.appendChild(col);
     messagesEl.appendChild(row);
     scrollToBottom();
-    return { row: row, bubble: bubble };
+    return { row: row, bubble: bubble, activity: activity };
   }
 
   function showTyping(bubble) {
@@ -378,6 +410,39 @@
 
     var answer = "";
     var streamError = null;
+    var activityTimer = null;
+    var toolRunning = false;
+
+    function hideActivity() {
+      if (activityTimer) {
+        clearTimeout(activityTimer);
+        activityTimer = null;
+      }
+      toolRunning = false;
+      parts.activity.hidden = true;
+    }
+
+    function showToolEvent(tool) {
+      if (!tool || !tool.name) return;
+      if (activityTimer) {
+        clearTimeout(activityTimer);
+        activityTimer = null;
+      }
+      var isStart = tool.status === "start";
+      toolRunning = isStart;
+      parts.activity.textContent = isStart
+        ? toolLabel(tool.name)
+        : toolDoneLabel(tool.name, tool.ok !== false);
+      parts.activity.hidden = false;
+      scrollToBottom();
+
+      if (!isStart) {
+        activityTimer = setTimeout(function () {
+          activityTimer = null;
+          parts.activity.hidden = true;
+        }, 1400);
+      }
+    }
 
     Session.authFetch("/api/chat/stream", {
       method: "POST",
@@ -398,8 +463,12 @@
         }
         return consume(response.body, function (event) {
           if (event.error) {
+            hideActivity();
             streamError = event.error;
+          } else if (event.tool) {
+            showToolEvent(event.tool);
           } else if (event.delta) {
+            hideActivity();
             if (!answer) {
               parts.bubble.textContent = "";
               parts.bubble.classList.add("is-streaming");
@@ -407,10 +476,13 @@
             answer += event.delta;
             parts.bubble.textContent = answer;
             scrollToBottom();
+          } else if (event.done) {
+            if (toolRunning) hideActivity();
           }
         });
       })
       .then(function () {
+        if (toolRunning) hideActivity();
         parts.bubble.classList.remove("is-streaming");
         if (streamError) throw new Error(errorText({ error: streamError }, 0));
         if (!answer.trim()) {
@@ -421,6 +493,7 @@
         saveHistory();
       })
       .catch(function (err) {
+        hideActivity();
         parts.bubble.classList.remove("is-streaming");
         markError(parts.row, parts.bubble, err.message);
       })

@@ -24,9 +24,13 @@ os.environ["TH_DB_PATH"] = os.path.join(_TMPDIR, "app.db")
 os.environ["JWT_SECRET"] = "test-secret-do-not-use-in-production"
 # ignore any TH_SYSTEM_PROMPT from the developer's .env so the prompts/ files are used
 os.environ["TH_SYSTEM_PROMPT"] = ""
+# keep test runs quiet and avoid writing instance/app.log
+os.environ["LOG_LEVEL"] = "CRITICAL"
+os.environ["LOG_FILE"] = ""
 
 import app as app_module  # noqa: E402
 import auth  # noqa: E402
+import memory  # noqa: E402
 from core import TokenHarborError  # noqa: E402
 
 CREDENTIALS = {
@@ -46,6 +50,9 @@ class FakeClient:
         self.chat_error = chat_error
         self.stream_error = stream_error
         self.payloads = []
+        self.calls = []
+        self.tools = None
+        self.handlers = None
 
     def chat(self, messages=None, **params):
         self.payloads.append(messages)
@@ -53,8 +60,33 @@ class FakeClient:
             raise self.chat_error
         return self.reply
 
+    def run_tools(self, content=None, *, messages=None, **params):
+        # Chat routes must pass the conversation as messages=..., never as content.
+        assert content is None, "run_tools received content instead of messages"
+        assert messages is not None, "run_tools received no messages"
+        self.calls.append({"content": content, "messages": messages})
+        self.payloads.append(messages)
+        self.tools = params.get("tools")
+        self.handlers = params.get("handlers")
+        if self.chat_error:
+            raise self.chat_error
+        return self.reply
+
     def stream_events(self, messages=None, **params):
         self.payloads.append(messages)
+        for event in self.events:
+            yield event
+        if self.stream_error:
+            raise self.stream_error
+
+    def run_tools_events(self, content=None, *, messages=None, **params):
+        # Same call contract as run_tools.
+        assert content is None, "run_tools_events received content instead of messages"
+        assert messages is not None, "run_tools_events received no messages"
+        self.calls.append({"content": content, "messages": messages})
+        self.payloads.append(messages)
+        self.tools = params.get("tools")
+        self.handlers = params.get("handlers")
         for event in self.events:
             yield event
         if self.stream_error:
@@ -79,6 +111,7 @@ class AppTestCase(unittest.TestCase):
     def setUp(self):
         os.environ["TH_DB_PATH"] = os.path.join(_TMPDIR, "app.db")
         auth.init_db()
+        memory.init_db()
         connection = auth.connect()
         connection.execute("DELETE FROM users")
         connection.commit()
@@ -164,6 +197,35 @@ class TestSystemPrompt(AppTestCase):
         self.assertEqual(payload[0]["content"], app_module.system_prompt())
         self.assertEqual(payload[1], {"role": "user", "content": "hello"})
 
+    def test_chat_passes_messages_not_content(self):
+        fake = self.use_client()
+        response = self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        call = fake.calls[-1]
+        self.assertIsNone(call["content"])
+        self.assertEqual(call["messages"][0]["role"], "system")
+        self.assertEqual(call["messages"][1], {"role": "user", "content": "hello"})
+
+    def test_stream_passes_messages_not_content(self):
+        fake = self.use_client(
+            FakeClient(events=[{"type": "done", "finish_reason": "stop",
+                                "usage": None, "tool_calls": []}])
+        )
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "مرحبا"}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        call = fake.calls[-1]
+        self.assertIsNone(call["content"])
+        self.assertEqual(call["messages"][0]["role"], "system")
+        self.assertEqual(call["messages"][1], {"role": "user", "content": "مرحبا"})
+
     def test_system_prompt_can_be_overridden_by_env(self):
         os.environ["TH_SYSTEM_PROMPT"] = "You are a pirate."
         self.addCleanup(os.environ.__setitem__, "TH_SYSTEM_PROMPT", "")
@@ -174,6 +236,7 @@ class TestSystemPrompt(AppTestCase):
             headers=self.headers,
         )
         self.assertIn("You are a pirate.", fake.payloads[-1][0]["content"])
+        self.assertIn("Memory data model", fake.payloads[-1][0]["content"])
 
     def test_default_prompt_is_the_english_sage_persona(self):
         self.use_client()
@@ -186,6 +249,7 @@ class TestSystemPrompt(AppTestCase):
         prompt = app_module.system_prompt("en")
         self.assertIn("SAGE", prompt)
         self.assertIn("Always write your entire response in English.", prompt)
+        self.assertIn("Memory data model", prompt)
 
     def test_arabic_language_uses_the_arabic_prompt(self):
         fake = self.use_client()
@@ -201,6 +265,8 @@ class TestSystemPrompt(AppTestCase):
         # the Arabic persona document is actually loaded, not the English one
         self.assertIn("SAGE", payload[0]["content"])
         self.assertIn("باللغة العربية", payload[0]["content"])
+        # the generated schema brief is language-independent
+        self.assertIn("Memory data model", payload[0]["content"])
 
     def test_unknown_language_falls_back_to_english(self):
         fake = self.use_client()
@@ -362,6 +428,147 @@ class TestStreaming(AppTestCase):
         frames = parse_sse(response.get_data(as_text=True))
         self.assertEqual(frames[0], {"delta": "par"})
         self.assertEqual(frames[-1]["error"]["code"], "service_unavailable")
+
+
+class TestMemoryTools(AppTestCase):
+    def test_chat_uses_tool_loop_with_memory_tools(self):
+        fake = self.use_client()
+        response = self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "My sister Sara is 20."}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["reply"], "ok")
+        names = [schema["function"]["name"] for schema in fake.tools]
+        self.assertEqual(names, ["save_memory", "recall_memory"])
+        self.assertEqual(set(fake.handlers), {"save_memory", "recall_memory"})
+
+    def test_stream_forwards_tool_lifecycle_without_arguments(self):
+        events = [
+            {"type": "tool_start", "name": "save_memory", "id": "call_1"},
+            {"type": "tool_end", "name": "save_memory", "id": "call_1", "ok": True},
+            {"type": "delta", "content": "Saved."},
+            {"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []},
+        ]
+        fake = self.use_client(FakeClient(events=events))
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "Remember that."}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        frames = parse_sse(response.get_data(as_text=True))
+        self.assertEqual(
+            frames[0], {"tool": {"name": "save_memory", "status": "start"}}
+        )
+        self.assertEqual(
+            frames[1],
+            {"tool": {"name": "save_memory", "status": "end", "ok": True}},
+        )
+        self.assertEqual(frames[2], {"delta": "Saved."})
+        self.assertTrue(frames[3]["done"])
+        self.assertEqual([schema["function"]["name"] for schema in fake.tools],
+                         ["save_memory", "recall_memory"])
+
+    def test_stream_tool_handler_writes_memory_for_current_user(self):
+        class ToolClient:
+            def run_tools_events(self, messages=None, **params):
+                handlers = params["handlers"]
+                yield {"type": "tool_start", "name": "save_memory", "id": "call_1"}
+                handlers["save_memory"](
+                    entities=[{"name": "Sara", "entity_type": "Person"}],
+                    facts=[{"entity": "Sara", "predicate": "age", "value": 20}],
+                )
+                yield {"type": "tool_end", "name": "save_memory", "id": "call_1", "ok": True}
+                yield {"type": "delta", "content": "Saved."}
+                yield {"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []}
+
+        patcher = patch.object(app_module, "get_client", lambda: ToolClient())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        me = self.http.get("/api/auth/me", headers=self.headers).get_json()["user"]
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "My sister Sara is 20."}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Saved.", response.data)
+
+        conn = auth.connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT f.value, f.predicate, e.name
+                FROM memory_facts f JOIN entities e ON e.id = f.entity_id
+                WHERE f.user_id = ? AND e.name = ?
+                """,
+                (me["id"], "Sara"),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["predicate"], "age")
+        self.assertEqual(json.loads(row["value"]), 20)
+
+    def test_tool_logs_do_not_include_arguments_or_results(self):
+        def save_memory(**kwargs):
+            return {"saved": "TOP_SECRET_RESULT"}
+
+        wrapped = app_module.log_tool_handlers({"save_memory": save_memory}, user_id=7)
+        with self.assertLogs("app", level="INFO") as captured:
+            wrapped["save_memory"](secret="TOP_SECRET_ARGUMENT")
+
+        events = [getattr(record, "event", None) for record in captured.records]
+        self.assertIn("tool.start", events)
+        self.assertIn("tool.end", events)
+        self.assertTrue(all(getattr(record, "tool", None) == "save_memory"
+                            for record in captured.records))
+        self.assertTrue(all(getattr(record, "user_id", None) == 7
+                            for record in captured.records))
+        rendered = "\n".join(f"{record.getMessage()} {record.__dict__}"
+                             for record in captured.records)
+        self.assertNotIn("TOP_SECRET_ARGUMENT", rendered)
+        self.assertNotIn("TOP_SECRET_RESULT", rendered)
+
+    def test_tool_errors_log_type_but_not_exception_text(self):
+        def broken_tool(**kwargs):
+            raise ValueError("TOP_SECRET_ERROR")
+
+        wrapped = app_module.log_tool_handlers({"broken_tool": broken_tool})
+        with self.assertLogs("app", level="WARNING") as captured:
+            with self.assertRaises(ValueError):
+                wrapped["broken_tool"](secret="TOP_SECRET_ARGUMENT")
+
+        self.assertEqual([getattr(record, "event", None) for record in captured.records],
+                         ["tool.error"])
+        record = captured.records[0]
+        self.assertEqual(record.tool, "broken_tool")
+        self.assertFalse(record.ok)
+        self.assertEqual(record.error_type, "ValueError")
+        rendered = f"{record.getMessage()} {record.__dict__}"
+        self.assertNotIn("TOP_SECRET_ARGUMENT", rendered)
+        self.assertNotIn("TOP_SECRET_ERROR", rendered)
+
+    def test_failed_tool_is_reported_as_not_ok(self):
+        events = [
+            {"type": "tool_start", "name": "recall_memory", "id": "call_1"},
+            {"type": "tool_end", "name": "recall_memory", "id": "call_1", "ok": False},
+            {"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []},
+        ]
+        self.use_client(FakeClient(events=events))
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "What do you remember?"}]},
+            headers=self.headers,
+        )
+        frames = parse_sse(response.get_data(as_text=True))
+        self.assertEqual(
+            frames[1],
+            {"tool": {"name": "recall_memory", "status": "end", "ok": False}},
+        )
 
 
 if __name__ == "__main__":

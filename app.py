@@ -2,25 +2,33 @@
 
 Routes
 ------
-``GET  /``                 welcome page: enter your name (saved in localStorage)
+``GET  /``                 redirects to the login page
 ``GET  /chat``             chat page: greeting + message input
-``POST /api/chat/stream``  streamed reply over SSE
+``POST /api/chat/stream``  streamed reply over SSE, including tool lifecycle
 ``POST /api/chat``         non-streaming JSON fallback
 
 The browser never sees the API key: all calls go through this server, which
-prepends the system prompt as the message at index 0.
+prepends the system prompt as the message at index 0. Memory tool handlers are
+bound to the authenticated user, so the model never receives a user id.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, stream_with_context
 
 import auth
+import logging_config
+import memory
 from core import Message, TokenHarbor, TokenHarborError
+
+logging_config.configure_logging()
+logger = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a friendly, concise assistant in a web chat app. "
@@ -65,8 +73,12 @@ LANGUAGE_DIRECTIVES = {
 
 app = Flask(__name__)
 
-# register the users table, the teardown handler and the auth middleware
+# Request logging is registered before auth so rejected requests are logged too.
+logging_config.init_request_logging(app)
+
+# register the users/memory tables, the teardown handler and auth middleware
 auth.init_db()
+memory.init_db()
 auth.init_app(app)
 
 
@@ -76,6 +88,10 @@ auth.init_app(app)
 def model_name() -> str:
     """Model id, overridable with ``TH_MODEL``."""
     return os.environ.get("TH_MODEL", "").strip() or DEFAULT_WEB_MODEL
+
+
+def elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 2)
 
 
 def normalize_language(value: Any) -> str:
@@ -108,14 +124,16 @@ def system_prompt(language: str = DEFAULT_LANGUAGE) -> str:
     """System prompt for ``language``.
 
     ``TH_SYSTEM_PROMPT`` overrides the persona for every language; otherwise the
-    matching ``prompts/*.md`` document is used. A language directive is appended
-    so the model replies in the selected language.
+    matching ``prompts/*.md`` document is used. The generated memory schema
+    brief is always appended, so the model keeps the data model even when the
+    persona is overridden. A language directive is appended so the model replies
+    in the selected language.
     """
     code = normalize_language(language)
     override = os.environ.get("TH_SYSTEM_PROMPT", "").strip()
     base = override or read_prompt(code)
     directive = LANGUAGE_DIRECTIVES[code]
-    return f"{base}\n\n{directive}"
+    return f"{base}\n\n{memory.prompt_brief()}\n\n{directive}"
 
 
 _client: Optional[TokenHarbor] = None
@@ -134,6 +152,62 @@ def get_client() -> TokenHarbor:
         raise _client_error
     assert _client is not None
     return _client
+
+
+def log_tool_handlers(handlers: Dict[str, Any], user_id: Any = None) -> Dict[str, Any]:
+    """Wrap tool handlers with start/end/error logs, never logging arguments."""
+    wrapped: Dict[str, Any] = {}
+
+    for name, handler in handlers.items():
+
+        def invoke(_name: str = name, _handler: Any = handler, **kwargs: Any) -> Any:
+            started = time.perf_counter()
+            logger.info(
+                "tool.start",
+                extra={"event": "tool.start", "tool": _name, "user_id": user_id},
+            )
+            try:
+                result = _handler(**kwargs)
+            except Exception as exc:
+                logger.warning(
+                    "tool.error",
+                    extra={
+                        "event": "tool.error",
+                        "tool": _name,
+                        "user_id": user_id,
+                        "ok": False,
+                        "outcome": "error",
+                        "error_type": type(exc).__name__,
+                        "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                    },
+                )
+                raise
+            logger.info(
+                "tool.end",
+                extra={
+                    "event": "tool.end",
+                    "tool": _name,
+                    "user_id": user_id,
+                    "ok": True,
+                    "outcome": "ok",
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                },
+            )
+            return result
+
+        wrapped[name] = invoke
+
+    return wrapped
+
+
+def memory_toolset():
+    """Memory tool schemas/handlers bound to the authenticated user."""
+    claims = auth.current_user() or {}
+    user_id = claims.get("id")
+    if user_id is None:
+        raise auth.AuthError("unauthorized", "Authentication required.", 401)
+    tools, handlers = memory.toolset(user_id, connection=auth.get_db())
+    return tools, log_tool_handlers(handlers, user_id=user_id)
 
 
 # --- message handling -----------------------------------------------------
@@ -261,8 +335,9 @@ def api_logout():
 def api_chat():
     """Non-streaming completion: returns ``{"reply": "..."}``."""
     data = request.get_json(silent=True) or {}
+    language = normalize_language(data.get("language"))
     try:
-        payload = build_payload(data.get("messages"), data.get("language"))
+        payload = build_payload(data.get("messages"), language)
     except ValueError as exc:
         return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
 
@@ -271,11 +346,45 @@ def api_chat():
     except TokenHarborError as exc:
         return jsonify(error_body(exc)), 500
 
+    started = time.perf_counter()
+    logger.info(
+        "chat.request",
+        extra={
+            "event": "chat.request",
+            "model": model_name(),
+            "language": language,
+            "streaming": False,
+            "message_count": max(0, len(payload) - 1),
+        },
+    )
+    tools, handlers = memory_toolset()
     try:
-        reply = client.chat(payload)
+        reply = client.run_tools(messages=payload, tools=tools, handlers=handlers)
     except TokenHarborError as exc:
+        logger.error(
+            "chat.error",
+            extra={
+                "event": "chat.error",
+                "streaming": False,
+                "error_code": exc.code,
+                "error_type": type(exc).__name__,
+                "status": error_status(exc),
+                "retryable": exc.retryable,
+                "duration_ms": elapsed_ms(started),
+                "outcome": "error",
+            },
+        )
         return jsonify(error_body(exc)), error_status(exc)
 
+    logger.info(
+        "chat.done",
+        extra={
+            "event": "chat.done",
+            "streaming": False,
+            "duration_ms": elapsed_ms(started),
+            "outcome": "ok",
+        },
+    )
     return jsonify({"reply": reply})
 
 
@@ -283,8 +392,9 @@ def api_chat():
 def api_chat_stream():
     """Streamed completion over Server-Sent Events."""
     data = request.get_json(silent=True) or {}
+    language = normalize_language(data.get("language"))
     try:
-        payload = build_payload(data.get("messages"), data.get("language"))
+        payload = build_payload(data.get("messages"), language)
     except ValueError as exc:
         return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
 
@@ -293,25 +403,94 @@ def api_chat_stream():
     except TokenHarborError as exc:
         return jsonify(error_body(exc)), 500
 
+    logger.info(
+        "chat.request",
+        extra={
+            "event": "chat.request",
+            "model": model_name(),
+            "language": language,
+            "streaming": True,
+            "message_count": max(0, len(payload) - 1),
+        },
+    )
+    tools, handlers = memory_toolset()
+
     def generate():
+        started = time.perf_counter()
+        outcome = "ok"
+        error_code: Optional[str] = None
+        finish_reason: Optional[str] = None
         try:
-            for event in client.stream_events(payload):
+            for event in client.run_tools_events(messages=payload, tools=tools, handlers=handlers):
                 if event["type"] == "delta" and event.get("content"):
                     yield sse({"delta": event["content"]})
                 elif event["type"] == "reasoning" and event.get("content"):
                     yield sse({"reasoning": event["content"]})
+                elif event["type"] == "tool_start":
+                    yield sse({"tool": {"name": event.get("name"), "status": "start"}})
+                elif event["type"] == "tool_end":
+                    yield sse(
+                        {
+                            "tool": {
+                                "name": event.get("name"),
+                                "status": "end",
+                                "ok": bool(event.get("ok", True)),
+                            }
+                        }
+                    )
                 elif event["type"] == "done":
+                    finish_reason = event.get("finish_reason")
                     yield sse(
                         {
                             "done": True,
-                            "finish_reason": event.get("finish_reason"),
+                            "finish_reason": finish_reason,
                             "usage": event.get("usage"),
                         }
                     )
         except TokenHarborError as exc:
+            outcome = "error"
+            error_code = exc.code
+            logger.error(
+                "chat.stream.error",
+                extra={
+                    "event": "chat.stream.error",
+                    "streaming": True,
+                    "error_code": exc.code,
+                    "error_type": type(exc).__name__,
+                    "status": error_status(exc),
+                    "retryable": exc.retryable,
+                    "duration_ms": elapsed_ms(started),
+                    "outcome": "error",
+                },
+            )
             yield sse(error_body(exc))
         except Exception as exc:  # never leak a traceback into the stream
-            yield sse({"error": {"code": "server_error", "message": str(exc)}})
+            outcome = "error"
+            error_code = "server_error"
+            logger.exception(
+                "chat.stream.error",
+                extra={
+                    "event": "chat.stream.error",
+                    "streaming": True,
+                    "error_code": error_code,
+                    "error_type": type(exc).__name__,
+                    "duration_ms": elapsed_ms(started),
+                    "outcome": "error",
+                },
+            )
+            yield sse({"error": {"code": error_code, "message": str(exc)}})
+        finally:
+            logger.info(
+                "chat.stream.done",
+                extra={
+                    "event": "chat.stream.done",
+                    "streaming": True,
+                    "finish_reason": finish_reason,
+                    "duration_ms": elapsed_ms(started),
+                    "outcome": outcome,
+                    "error_code": error_code,
+                },
+            )
         yield "data: [DONE]\n\n"
 
     headers = {

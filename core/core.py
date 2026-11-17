@@ -763,23 +763,30 @@ class TokenHarbor:
     # -- tool calling ------------------------------------------------------
 
     @staticmethod
-    def _invoke_tool(call: ToolCall, registry: Mapping[str, Callable[..., Any]]) -> str:
-        """Run one tool call and return the string content for the ``tool`` message."""
+    def _invoke_tool_result(
+        call: ToolCall, registry: Mapping[str, Callable[..., Any]]
+    ) -> "tuple[str, bool]":
+        """Run one tool call; return ``(content_for_model, succeeded)``."""
         if call.parse_error:
-            return json.dumps({"error": f"Invalid JSON arguments: {call.parse_error}"})
+            return json.dumps({"error": f"Invalid JSON arguments: {call.parse_error}"}), False
         handler = registry.get(call.name)
         if handler is None:
-            return json.dumps({"error": f"Unknown tool: {call.name}"})
+            return json.dumps({"error": f"Unknown tool: {call.name}"}), False
         try:
             result = handler(**call.arguments)
         except Exception as exc:  # surface the failure to the model, don't crash
-            return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+            return json.dumps({"error": f"{type(exc).__name__}: {exc}"}), False
         if isinstance(result, str):
-            return result
+            return result, True
         try:
-            return json.dumps(result, default=str)
+            return json.dumps(result, default=str), True
         except TypeError:
-            return str(result)
+            return str(result), True
+
+    @staticmethod
+    def _invoke_tool(call: ToolCall, registry: Mapping[str, Callable[..., Any]]) -> str:
+        """Run one tool call and return the string content for the ``tool`` message."""
+        return TokenHarbor._invoke_tool_result(call, registry)[0]
 
     @staticmethod
     def _working_messages(messages: Any, content: Any, history: List[Message]) -> List[Message]:
@@ -842,6 +849,77 @@ class TokenHarbor:
                         "tool_call_id": call.id,
                         "name": call.name,
                         "content": self._invoke_tool(call, registry),
+                    }
+                )
+
+    def run_tools_events(
+        self,
+        content: Any = None,
+        *,
+        tools: Sequence[Any],
+        handlers: Optional[Mapping[str, Callable[..., Any]]] = None,
+        model: Optional[str] = None,
+        max_rounds: int = 8,
+        messages: Any = None,
+        **params: Any,
+    ) -> Iterator[Dict[str, Any]]:
+        """Run the tool loop and yield typed events, including tool lifecycle.
+
+        Text events are the same ``delta`` / ``reasoning`` / ``done`` events as
+        :meth:`stream_events`. Between rounds it additionally yields
+        ``tool_start`` and ``tool_end`` events::
+
+            {"type": "tool_start", "name": "save_memory", "id": "call_1"}
+            {"type": "tool_end", "name": "save_memory", "id": "call_1", "ok": True}
+
+        Only the final round's ``done`` event is emitted, so clients can treat it
+        as the end of the whole turn.
+        """
+        working = self._working_messages(messages, content, self.messages)
+        schemas, registry = _prepare_tools(tools, handlers)
+        rounds = 0
+        while True:
+            parts: List[str] = []
+            tool_calls: List[ToolCall] = []
+            final_event: Optional[Dict[str, Any]] = None
+
+            for event in self.stream_events(working, model=model, tools=schemas, **params):
+                if event["type"] == "done":
+                    tool_calls = event.get("tool_calls") or []
+                    final_event = event
+                else:
+                    if event["type"] == "delta":
+                        parts.append(event.get("content") or "")
+                    yield event
+
+            text = "".join(parts)
+            assistant_message: Dict[str, Any] = {"role": "assistant", "content": text}
+            if tool_calls:
+                assistant_message["tool_calls"] = [call.to_raw() for call in tool_calls]
+            working.append(assistant_message)  # type: ignore[arg-type]
+
+            if not tool_calls:
+                if final_event is not None:
+                    yield final_event
+                return
+
+            if rounds >= max_rounds:
+                raise TokenHarborError(
+                    f"Tool loop exceeded max_rounds={max_rounds}; the model kept calling tools.",
+                    code="max_tool_rounds",
+                )
+            rounds += 1
+
+            for call in tool_calls:
+                yield {"type": "tool_start", "name": call.name, "id": call.id}
+                result, ok = self._invoke_tool_result(call, registry)
+                yield {"type": "tool_end", "name": call.name, "id": call.id, "ok": ok}
+                working.append(  # type: ignore[arg-type]
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "name": call.name,
+                        "content": result,
                     }
                 )
 

@@ -14,8 +14,10 @@ streaming, conversation history, tool calling, and typed error handling.
 
 ```
 .
-├── app.py                 # Flask app: pages, auth API, chat API
+├── app.py                 # Flask app: pages, auth API, chat API, memory tools
 ├── auth.py                # users, password hashing, JWTs, auth middleware
+├── logging_config.py      # structured logs, request IDs, rotating file
+├── memory.py              # personal memory schema, queries, agent tools
 ├── templates/
 │   ├── login.html         # email + password
 │   ├── register.html      # first name, last name, email, password
@@ -36,6 +38,8 @@ streaming, conversation history, tool calling, and typed error handling.
 │   ├── test_auth.py       # registration, login, JWT and middleware tests
 │   ├── test_app.py        # Flask app tests (stubbed client, no network)
 │   ├── test_core.py       # client unit tests (local mock gateway, no network)
+│   ├── test_memory.py     # entities, relationships, facts, tool handlers
+│   ├── test_logging.py    # formatters, request IDs, file rotation, redaction
 │   └── integration/
 │       └── test_integration.py   # live tests against tokenharbor.ai
 ├── instance/app.db        # SQLite user database (created at runtime, gitignored)
@@ -79,6 +83,9 @@ How it works:
 5. **`POST /api/chat/stream`** — the server calls Token Harbor and streams the
    reply back token by token over SSE.
 6. **`POST /api/chat`** — non-streaming fallback returning `{"reply": "..."}`.
+7. **Memory tools** — the model can save and recall personal facts. Tool
+   activity is streamed as transient status frames, so the UI can show
+   “Saving memory...” without inventing assistant text.
 
 ## Accounts & authentication
 
@@ -183,11 +190,124 @@ Config (all optional except the key):
 | `TH_SYSTEM_PROMPT` | — | optional persona override applied to every language; unset uses `prompts/*.md` |
 | `PORT` | `5000` | dev server port |
 | `FLASK_DEBUG` | `1` | set to `0` to disable the debug reloader |
+| `LOG_LEVEL` | `INFO` | stdlib log level |
+| `LOG_FORMAT` | `text` | `text` for readable logs or `json` for machines |
+| `LOG_SQL` | `1` | log normalized SQL statements; `0` disables |
+| `LOG_SQL_PARAMS` | — | log SQL bind values (full query); dev only, see privacy note |
+| `LOG_FILE` | `instance/app.log` | rotating log file; set to empty to disable |
+| `LOG_MAX_BYTES` | `5000000` | rotate the log file after this size |
+| `LOG_BACKUP_COUNT` | `5` | number of rotated log files to keep |
 
 Generate a signing key with:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+## Personal memory (agent tools)
+
+The chat model can persist durable facts in the same SQLite database through
+two tools:
+
+- **`save_memory`** — batch saves entities, relationships, and facts.
+- **`recall_memory`** — searches the signed-in user's saved memory.
+
+The tables mirror the product schema, translated to SQLite: UUIDs are `TEXT`,
+JSONB becomes JSON `TEXT`, and timestamps are ISO-8601 UTC `TEXT`. `user_id`
+stays an `INTEGER` foreign key to `users.id`. Tables are created automatically
+on startup, so an existing `instance/app.db` gains them without a manual
+migration. Foreign keys are enabled by `auth.connect()`.
+
+For example, “My sister Sara is 20” can be saved as:
+
+```jsonc
+{
+  "entities": [{"name": "Sara", "entity_type": "Person"}],
+  "relationships": [
+    {"source_entity": "Current User", "target_entity": "Sara", "relationship_type": "Sister"}
+  ],
+  "facts": [
+    {"entity": "Sara", "predicate": "age", "value": 20, "confidence": 1.0}
+  ]
+}
+```
+
+- `Current User` is a per-user self entity. The model never receives a user id;
+  handlers are bound to the authenticated account, and every query is scoped by
+  `user_id`.
+- Facts are append-only. Pass `"replace": true` on a fact to set `valid_until`
+  on older values for the same entity and predicate. `recall_memory` hides
+  expired facts unless `include_expired` is true.
+- `value` can be any JSON scalar, array, or object.
+- Every returned entity, relationship, and fact includes its `created_at`.
+  Facts also include `observed_at` and `valid_until`.
+- The system prompts include a memory protocol instructing the model to recall
+  before answering personal questions and save only information the user
+  explicitly stated.
+- `app.system_prompt()` also appends `memory.prompt_brief()`: a compact
+  description of the three stores, the exact keys each tool accepts, the
+  server-managed fields (`id`, `user_id`, `created_at`) the model must never
+  send, and the validation limits. `TH_SYSTEM_PROMPT` replaces only the persona,
+  so the brief is present in every request. The brief is guidance; the actual
+  boundary is that no tool schema exposes `user_id` and `toolset()` binds it
+  from the JWT.
+
+The streaming endpoint emits tool lifecycle frames alongside text:
+
+```text
+data: {"tool":{"name":"save_memory","status":"start"}}
+
+data: {"tool":{"name":"save_memory","status":"end","ok":true}}
+
+data: {"delta":"Saved."}
+```
+
+`static/chat.js` turns those into localized status text (“Saving memory...”,
+“Searching memory...”, “Memory saved”) and never stores the status in chat
+history. Tool arguments and results are not sent to the browser. The configured
+model must support tool calling (`TH_MODEL`).
+
+## Logging
+
+Logs go to stdout and a rotating file (`instance/app.log` by default). Set
+`LOG_FILE=` to disable the file handler. Text is the default format for local
+readability; set `LOG_FORMAT=json` for structured production logs.
+
+Every request gets an `X-Request-ID` response header. HTTP, chat, memory, and
+tool logs carry `request_id`, and authenticated operations also carry `user_id`.
+
+```text
+2026-11-17 04:03:17.836 INFO  memory         memory.query | request_id=9ddc8dddf5b44f06a42f7e914f1244b7 user_id=1 has_entity=true has_predicate=false has_query=false query_chars=0 include_expired=false limit=20 entity_count=1 relationship_count=0 fact_count=1 duration_ms=2.41ms outcome=ok
+2026-11-17 04:03:17.838 INFO  memory         memory.sql | request_id=9ddc8dddf5b44f06a42f7e914f1244b7 user_id=1 operation=fact.query duration_ms=0.08ms outcome=ok
+    SQL: SELECT f.*, e.name AS entity_name, e.entity_type AS entity_type FROM memory_facts f JOIN entities e ON e.id = f.entity_id WHERE f.user_id = ? AND e.user_id = ? AND e.name = ? COLLATE NOCASE ORDER BY f.observed_at DESC, f.created_at DESC LIMIT ?
+```
+
+What is logged:
+
+- `http.request` / `http.response` — method, path, status, duration.
+- `chat.request` / `chat.done` / `chat.stream.done` — model, language, message
+  count, finish reason, duration.
+- `memory.query` / `memory.save` — filter flags, input counts, result counts,
+  duration.
+- `memory.sql` — normalized SQL statements with `?` placeholders, operation
+  name, and duration. Set `LOG_SQL=0` to disable. Set `LOG_SQL_PARAMS=1` to add
+  a `PARAMS:` line with the bind values (see the privacy note below).
+- `tool.start` / `tool.end` / `tool.error` — tool name, success, duration,
+  error type.
+- `memory.*.invalid` and `*.error` — validation warnings and unexpected errors.
+
+Privacy: logs never contain chat text, entity names, predicates, fact values,
+query text, tool arguments/results, JWTs, API keys, cookies, or request bodies.
+Loggers use counts, flags, timings, and error types instead. SQL logging includes
+only statement text and `?` placeholders. The one opt-in exception is
+`LOG_SQL_PARAMS=1`, which appends the bind values so you can see the full query;
+those values are personal memory data (names, facts, query text), so keep the
+flag off outside local debugging and avoid leaving it on in `instance/app.log`.
+
+```text
+2026-11-17 04:03:17.838 INFO  memory         memory.sql | request_id=… user_id=1 operation=fact.query duration_ms=0.08ms outcome=ok
+    SQL: SELECT f.*, e.name AS entity_name, … WHERE f.user_id = ? AND e.user_id = ? AND e.name = ? COLLATE NOCASE … LIMIT ?
+    PARAMS: (1, 1, 'Sara', 20)
 ```
 
 The sections below describe the `core` client that the app is built on.
@@ -352,9 +472,11 @@ python -m unittest discover -s tests -v
 python -m unittest discover -s tests/integration -v
 ```
 
-The offline suite covers the `core` client, the Flask app, and authentication:
-registration, duplicate/case-insensitive emails, validation, login, JWT claims
-and expiry, the middleware, and the per-message delete/prompt rules.
+The offline suite covers the `core` client, the Flask app, authentication, and
+personal memory: registration, duplicate/case-insensitive emails, validation,
+login, JWT claims and expiry, the middleware, the per-message delete/prompt
+rules, memory saves/queries, user isolation, replacement/expiry behavior, tool
+lifecycle events, structured logging, request correlation, and log redaction.
 
 Integration tests default to the free model `deepseek-v4.1-flash:free` so they
 don't spend your balance. Override with `TH_TEST_MODEL`:
@@ -374,6 +496,7 @@ TH_TEST_MODEL=qwen3.7-max python -m unittest discover -s tests/integration -v
 | `.stream_events(...)` | Yield `delta` / `reasoning` / `done` (with `tool_calls`) |
 | `.ask(...)` / `.stream_ask(...)` | History-aware call helpers |
 | `.run_tools(...)` / `.run_tools_stream(...)` | Full tool-calling loop |
+| `.run_tools_events(...)` | Tool loop with `delta` / `reasoning` / `tool_start` / `tool_end` / `done` events |
 | `@tool` / `function_tool` | Build a tool schema from a function |
 | `parse_tool_calls(...)` | Convert raw `tool_calls` to `ToolCall` objects |
 | `.system/.user/.assistant/.tool` | Append a message |
