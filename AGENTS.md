@@ -99,6 +99,12 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   `LANG_ALIASES` in `static/chat.js`. `TH_SYSTEM_PROMPT` overrides all languages.
 - Both prompt files contain a “Memory Tool Protocol” naming `save_memory` and
   `recall_memory`; keep those names in sync with `memory.py` and `static/chat.js`.
+- `memory.prompt_brief()` is generated from the schema constants and appended to
+  every system prompt by `app.system_prompt()`, including when
+  `TH_SYSTEM_PROMPT` overrides the persona. Add or rename a tool field in the
+  schema, the brief text, and the drift test in `tests/test_memory.py` together.
+  The brief is not a security boundary: `user_id` stays out of every tool schema
+  and is bound by `memory.toolset()`.
 - Default models differ: `app.py` uses `deepseek-v4.1-flash:free` (no balance
   needed), while `core` defaults to `deepseek-v4.1-flash`. Both honor `TH_MODEL`.
 - SSE clients expect `{"delta"}` / `{"reasoning"}` frames, transient

@@ -124,14 +124,16 @@ def system_prompt(language: str = DEFAULT_LANGUAGE) -> str:
     """System prompt for ``language``.
 
     ``TH_SYSTEM_PROMPT`` overrides the persona for every language; otherwise the
-    matching ``prompts/*.md`` document is used. A language directive is appended
-    so the model replies in the selected language.
+    matching ``prompts/*.md`` document is used. The generated memory schema
+    brief is always appended, so the model keeps the data model even when the
+    persona is overridden. A language directive is appended so the model replies
+    in the selected language.
     """
     code = normalize_language(language)
     override = os.environ.get("TH_SYSTEM_PROMPT", "").strip()
     base = override or read_prompt(code)
     directive = LANGUAGE_DIRECTIVES[code]
-    return f"{base}\n\n{directive}"
+    return f"{base}\n\n{memory.prompt_brief()}\n\n{directive}"
 
 
 _client: Optional[TokenHarbor] = None

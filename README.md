@@ -244,6 +244,13 @@ For example, “My sister Sara is 20” can be saved as:
 - The system prompts include a memory protocol instructing the model to recall
   before answering personal questions and save only information the user
   explicitly stated.
+- `app.system_prompt()` also appends `memory.prompt_brief()`: a compact
+  description of the three stores, the exact keys each tool accepts, the
+  server-managed fields (`id`, `user_id`, `created_at`) the model must never
+  send, and the validation limits. `TH_SYSTEM_PROMPT` replaces only the persona,
+  so the brief is present in every request. The brief is guidance; the actual
+  boundary is that no tool schema exposes `user_id` and `toolset()` binds it
+  from the JWT.
 
 The streaming endpoint emits tool lifecycle frames alongside text:
 

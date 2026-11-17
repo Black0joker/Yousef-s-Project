@@ -1065,6 +1065,30 @@ RECALL_MEMORY_SCHEMA: Dict[str, Any] = {
 TOOL_SCHEMAS: Sequence[Dict[str, Any]] = (SAVE_MEMORY_SCHEMA, RECALL_MEMORY_SCHEMA)
 
 
+def prompt_brief() -> str:
+    """Compact data-model reference appended to every system prompt.
+
+    Generated from the schema constants so it cannot drift from the tool
+    definitions. It describes the logical model only: ids, the user id, and
+    timestamps are server-managed and are never tool parameters.
+    """
+    return f"""### Memory data model (reference)
+
+Three stores, all scoped to the signed-in user:
+
+- `entities` — people, places, pets, organizations, events, things. Unique per user on name + type, case-insensitive. Keys: `name` (max {MAX_NAME} chars), `entity_type` (max {MAX_ENTITY_TYPE}).
+- `relationships` — one directed edge from source to target with a label. Keys: `source_entity`, `target_entity`, `relationship_type` (max {MAX_RELATIONSHIP_TYPE}).
+- `memory_facts` — an entity plus a predicate mapped to a JSON value. Keys: `entity`, `predicate` (max {MAX_PREDICATE}), `value` (any JSON value, up to {MAX_VALUE_BYTES // 1000} KB), `confidence`, `source`, `observed_at`, `valid_until`, `replace`.
+
+Facts are append-only: send the new fact with `replace: true` to supersede an older value for the same entity and predicate. Expired facts stay hidden unless `include_expired` is true.
+
+Server-managed — never send these and never invent them: `id`, `user_id`, `created_at`, and the defaults for `source` and `observed_at`. The server binds the user from the signed-in session and ignores extra keys. There is no parameter for SQL, table names, or columns.
+
+Limits: {MAX_ENTITIES_PER_CALL} entities, {MAX_RELATIONSHIPS_PER_CALL} relationships, and {MAX_FACTS_PER_CALL} facts per `save_memory` call. `recall_memory` accepts `entity`, `predicate`, `query` (max {MAX_QUERY} chars), `include_expired`, and `limit` (1–{MAX_LIMIT}, default {DEFAULT_LIMIT}). Prefer one batched call over several small ones.
+
+If a key is not listed above, it is not a parameter — call `recall_memory` or ask the user instead of guessing."""
+
+
 def handlers(
     user_id: Any,
     connection: Optional[sqlite3.Connection] = None,

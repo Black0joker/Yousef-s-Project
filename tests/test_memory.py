@@ -436,6 +436,19 @@ class MemoryTestCase(unittest.TestCase):
         self.assertIn("memory.query.invalid", events)
         self.assertTrue(all(getattr(record, "reason", None) for record in captured.records))
 
+    def test_prompt_brief_covers_every_tool_parameter(self):
+        brief = memory.prompt_brief()
+        for schema in (memory.SAVE_MEMORY_SCHEMA, memory.RECALL_MEMORY_SCHEMA):
+            for name, spec in schema["function"]["parameters"]["properties"].items():
+                self.assertIn(name, brief)
+                for nested in spec.get("items", {}).get("properties", {}):
+                    self.assertIn(nested, brief)
+        self.assertIn("never send", brief)
+        for managed in ("id", "user_id", "created_at"):
+            self.assertIn(f"`{managed}`", brief)
+        self.assertIn(str(memory.MAX_ENTITIES_PER_CALL), brief)
+        self.assertIn(str(memory.MAX_LIMIT), brief)
+
     def test_toolset_exposes_both_tools_and_binds_the_user(self):
         schemas, handlers = memory.toolset(self.user_a, connection=self.conn)
         names = [schema["function"]["name"] for schema in schemas]

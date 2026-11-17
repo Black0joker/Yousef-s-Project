@@ -236,6 +236,7 @@ class TestSystemPrompt(AppTestCase):
             headers=self.headers,
         )
         self.assertIn("You are a pirate.", fake.payloads[-1][0]["content"])
+        self.assertIn("Memory data model", fake.payloads[-1][0]["content"])
 
     def test_default_prompt_is_the_english_sage_persona(self):
         self.use_client()
@@ -248,6 +249,7 @@ class TestSystemPrompt(AppTestCase):
         prompt = app_module.system_prompt("en")
         self.assertIn("SAGE", prompt)
         self.assertIn("Always write your entire response in English.", prompt)
+        self.assertIn("Memory data model", prompt)
 
     def test_arabic_language_uses_the_arabic_prompt(self):
         fake = self.use_client()
@@ -263,6 +265,8 @@ class TestSystemPrompt(AppTestCase):
         # the Arabic persona document is actually loaded, not the English one
         self.assertIn("SAGE", payload[0]["content"])
         self.assertIn("باللغة العربية", payload[0]["content"])
+        # the generated schema brief is language-independent
+        self.assertIn("Memory data model", payload[0]["content"])
 
     def test_unknown_language_falls_back_to_english(self):
         fake = self.use_client()
