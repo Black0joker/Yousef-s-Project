@@ -1,8 +1,10 @@
-# Youssef's Project
+# SAGE
 
-A small Python client for [Token Harbor](https://tokenharbor.ai) — one
-OpenAI-compatible gateway for many models. It handles message passing, token
-streaming, conversation history, tool calling, and typed error handling.
+SAGE — Smart Assistance, Guidance & Ease — is a Flask chat app with personal
+memory, built on a small Python client for [Token Harbor](https://tokenharbor.ai):
+one OpenAI-compatible gateway for many models. The client handles message
+passing, token streaming, conversation history, tool calling, and typed error
+handling.
 
 - **Gateway:** `https://tokenharbor.ai/v1` (OpenAI-compatible `/v1/chat/completions`)
 - **Auth:** universal key `thk_live_...`, read from the environment
