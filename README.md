@@ -85,9 +85,11 @@ How it works:
 5. **`POST /api/chat/stream`** — the server calls Token Harbor and streams the
    reply back token by token over SSE.
 6. **`POST /api/chat`** — non-streaming fallback returning `{"reply": "..."}`.
-7. **Memory tools** — the model can save and recall personal facts. Tool
-   activity is streamed as transient status frames, so the UI can show
-   “Saving memory...” without inventing assistant text.
+7. **Memory tools** — the model can save and recall personal facts, and ask for
+   the account name. Tool activity is streamed as transient status frames, so
+   the UI can show “Saving memory...” without inventing assistant text.
+8. **`/settings`** — update your name and email, or change your password. The
+   avatar in the chat header links here.
 
 ## Accounts & authentication
 
@@ -114,22 +116,32 @@ Logging in returns a **JWT** (HS256, 7 days) that the browser keeps in
 | `POST` | `/api/auth/register` | `first_name, last_name, email, password` | `201 {token, expires_at, user}` |
 | `POST` | `/api/auth/login` | `email, password` | `200 {token, expires_at, user}` |
 | `GET` | `/api/auth/me` | – | `200 {user}` |
+| `PATCH` | `/api/auth/profile` | `first_name, last_name, email, current_password`* | `200 {token, expires_at, user}` |
+| `POST` | `/api/auth/password` | `current_password, new_password, confirm_password` | `204` |
 | `POST` | `/api/auth/logout` | – | `204` |
 
+\* `current_password` is required only when the email address actually changes.
+
 Errors: `400 invalid_request`, `400 password_mismatch`, `409 email_taken`,
-`401 invalid_credentials` (one generic message for a wrong email *or* password),
-`401 unauthorized` / `401 token_expired`.
+`401 invalid_credentials` (one generic message for a wrong email *or* password —
+wrong current password uses the same code), `401 unauthorized` /
+`401 token_expired`.
+
+A profile update returns a **fresh token**, because the JWT carries the name and
+email in its claims; the client stores it before the next request. Changing the
+password proves the current one but does **not** revoke other sessions: tokens
+are stateless and stay valid until they expire (7 days by default).
 
 **Middleware.** `auth.init_app(app)` registers a single `before_request` hook
 that verifies the bearer token on every route except the public ones
-(`/login`, `/register`, `/chat`, `/static/*`, and the two auth endpoints). API
-paths get a `401` JSON; page paths get redirected to `/login`.
+(`/login`, `/register`, `/chat`, `/settings`, `/static/*`, and the two auth
+endpoints). API paths get a `401` JSON; page paths get redirected to `/login`.
 
 > Because a browser *navigation* can't carry an `Authorization` header, the
-> `/chat` HTML shell is public and contains no data. Its first action is
-> `GET /api/auth/me`; a `401` clears the token and bounces you to `/login`.
-> Everything with data or side effects goes through the API, which the
-> middleware fully guards.
+> `/chat` and `/settings` HTML shells are public and contain no data. Their
+> first action is `GET /api/auth/me`; a `401` clears the token and bounces you
+> to `/login`. Everything with data or side effects goes through the API, which
+> the middleware fully guards.
 
 Chat history stays in the browser, keyed per account
 (`th_chat_history_<user id>`), so two accounts on one browser don't share a

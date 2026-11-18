@@ -295,6 +295,12 @@ def chat():
     return render_template("chat.html")
 
 
+@app.get("/settings")
+def settings_page():
+    """Account settings shell; the browser fetches and saves data with its token."""
+    return render_template("settings.html")
+
+
 # --- authentication API ---------------------------------------------------
 
 
@@ -336,6 +342,41 @@ def api_me():
 @app.post("/api/auth/logout")
 def api_logout():
     # tokens are stateless; the client discards its copy
+    return "", 204
+
+
+@app.patch("/api/auth/profile")
+def api_update_profile():
+    """Update names/email and return a token carrying the new claims."""
+    claims = auth.current_user() or {}
+    data = request.get_json(silent=True) or {}
+    try:
+        user = auth.update_profile(
+            claims.get("id"),
+            data.get("first_name"),
+            data.get("last_name"),
+            data.get("email"),
+            data.get("current_password"),
+        )
+    except auth.AuthError as exc:
+        return jsonify(exc.to_dict()), exc.status
+    return jsonify(auth.auth_payload(user))
+
+
+@app.post("/api/auth/password")
+def api_change_password():
+    """Replace the password after verifying the current one."""
+    claims = auth.current_user() or {}
+    data = request.get_json(silent=True) or {}
+    try:
+        auth.change_password(
+            claims.get("id"),
+            data.get("current_password"),
+            data.get("new_password"),
+            data.get("confirm_password"),
+        )
+    except auth.AuthError as exc:
+        return jsonify(exc.to_dict()), exc.status
     return "", 204
 
 
