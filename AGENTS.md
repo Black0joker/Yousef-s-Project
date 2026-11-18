@@ -10,8 +10,9 @@ behavior changes. This file covers workflow and non-obvious wiring.
   history), re-exported by `core/__init__.py`. It must not import Flask.
 - `app.py` — Flask routes, request validation, system-prompt assembly, SSE.
   Uses one lazily created shared client via `get_client()`.
-- `auth.py` — SQLite users, scrypt password hashes, JWTs, and the
-  `before_request` auth middleware registered by `init_app(app)`.
+- `auth.py` — SQLite users, scrypt password hashes, JWTs, profile/password
+  updates, and the `before_request` auth middleware registered by
+  `init_app(app)`.
 - `memory.py` — personal-memory schema, entity/relationship/fact CRUD, and the
   `save_memory` / `recall_memory` agent tool schemas and handlers.
 - `logging_config.py` — readable text logging by default, JSON option, request
@@ -95,8 +96,14 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - All routes are guarded by the auth middleware except `PUBLIC_PATHS` and
   `PUBLIC_PREFIXES` in `auth.py`. Add new public routes there; API paths get a
   JSON 401, page paths redirect to `/login`.
-- `/chat` is intentionally a public, data-free HTML shell; authentication and
-  user data come from `/api/auth/me`, and chat calls go through the guarded API.
+- `/chat` and `/settings` are intentionally public, data-free HTML shells;
+  authentication and user data come from `/api/auth/me`, and every write goes
+  through the guarded API (`PATCH /api/auth/profile`, `POST /api/auth/password`).
+- Profile updates reissue the JWT because `full_name`/`email` live in the claims;
+  the client must `Session.save(...)` the returned token. Changing the email
+  requires `current_password`, and both update paths use `auth.AuthError` codes.
+  Password changes do not revoke other tokens (stateless JWTs, 7-day TTL), so
+  never log names, emails, or passwords to compensate.
 - The client may only send `user`/`assistant` messages; `system` is rejected.
   The server always inserts the system prompt at index 0 in `build_payload()`.
 - Adding a language requires coordinated edits to `LANGUAGE_FILES`,

@@ -39,7 +39,16 @@ DEFAULT_DB_PATH = os.path.join("instance", "app.db")
 #: Routes reachable without a token. ``/chat`` is the public HTML shell described
 #: in the module docstring; the data endpoints it calls are still guarded.
 PUBLIC_PATHS = frozenset(
-    {"/", "/login", "/register", "/chat", "/favicon.ico", "/api/auth/register", "/api/auth/login"}
+    {
+        "/",
+        "/login",
+        "/register",
+        "/chat",
+        "/settings",
+        "/favicon.ico",
+        "/api/auth/register",
+        "/api/auth/login",
+    }
 )
 PUBLIC_PREFIXES = ("/static/",)
 
@@ -255,6 +264,92 @@ def authenticate(email: Any, password: Any) -> Dict[str, Any]:
     if user_row is None or not matches:
         raise invalid
     return _row_to_user_dict(user_row)
+
+
+# --- account updates ------------------------------------------------------
+
+
+def _account_row(user_id: Any) -> sqlite3.Row:
+    """The full user row (including the hash) for the authenticated id."""
+    try:
+        key = int(user_id)
+    except (TypeError, ValueError):
+        raise AuthError("unauthorized", "Authentication required.", 401) from None
+    row = get_db().execute("SELECT * FROM users WHERE id = ?", (key,)).fetchone()
+    if row is None:
+        raise AuthError("unauthorized", "Account no longer exists.", 401)
+    return row
+
+
+def _password_matches(row: sqlite3.Row, password: Any) -> bool:
+    if not isinstance(password, str) or not password:
+        return False
+    return check_password_hash(row["password_hash"], password)
+
+
+def update_profile(
+    user_id: Any,
+    first_name: Any,
+    last_name: Any,
+    email: Any,
+    current_password: Any = None,
+) -> Dict[str, Any]:
+    """Update the names and email of one account.
+
+    Changing the email address is sensitive: it requires the account's current
+    password, so a stolen token cannot lock the owner out.
+    """
+    first = clean_name(first_name, "first_name")
+    last = clean_name(last_name, "last_name")
+    address = clean_email(email)
+
+    row = _account_row(user_id)
+    if address != row["email"]:
+        if not _password_matches(row, current_password):
+            raise AuthError(
+                "invalid_credentials", "Your current password is incorrect.", 401
+            )
+        existing = get_user_by_email(address)
+        if existing is not None and existing["id"] != row["id"]:
+            raise AuthError("email_taken", "That email is already registered.", 409)
+
+    connection = get_db()
+    try:
+        connection.execute(
+            "UPDATE users SET first_name = ?, last_name = ?, email = ? WHERE id = ?",
+            (first, last, address, row["id"]),
+        )
+        connection.commit()
+    except sqlite3.IntegrityError as exc:  # race: someone claimed the email first
+        connection.rollback()
+        raise AuthError("email_taken", "That email is already registered.", 409) from exc
+
+    user = get_user_by_id(row["id"])
+    assert user is not None
+    return user
+
+
+def change_password(
+    user_id: Any,
+    current_password: Any,
+    new_password: Any,
+    confirm_password: Any = None,
+) -> None:
+    """Replace the password after proving the current one."""
+    secret = clean_password(new_password)
+    if confirm_password is not None and confirm_password != new_password:
+        raise AuthError("password_mismatch", "The two passwords do not match.")
+
+    row = _account_row(user_id)
+    if not _password_matches(row, current_password):
+        raise AuthError("invalid_credentials", "Your current password is incorrect.", 401)
+
+    connection = get_db()
+    connection.execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?",
+        (generate_password_hash(secret), row["id"]),
+    )
+    connection.commit()
 
 
 def _row_to_user_dict(row: Dict[str, Any]) -> Dict[str, Any]:

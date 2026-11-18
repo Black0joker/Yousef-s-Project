@@ -288,11 +288,142 @@ class TestMiddleware(AuthTestCase):
         self.assertEqual(self.http.get("/login").status_code, 200)
         self.assertEqual(self.http.get("/register").status_code, 200)
         self.assertEqual(self.http.get("/chat").status_code, 200)
+        self.assertEqual(self.http.get("/settings").status_code, 200)
         self.assertEqual(self.http.get("/").status_code, 302)
 
     def test_logout_returns_204(self):
         response = self.http.post("/api/auth/logout", headers=self.signed_in())
         self.assertEqual(response.status_code, 204)
+
+
+class TestProfileUpdates(AuthTestCase):
+    def update_profile(self, token, **payload):
+        return self.http.patch("/api/auth/profile", json=payload, headers=self.bearer(token))
+
+    def change_password(self, token, **payload):
+        return self.http.post("/api/auth/password", json=payload, headers=self.bearer(token))
+
+    def profile(self, **overrides):
+        payload = {"first_name": "Youssef", "last_name": "Smith", "email": VALID["email"]}
+        payload.update(overrides)
+        return payload
+
+    def test_name_update_reissues_the_token(self):
+        token = self.register().get_json()["token"]
+        response = self.update_profile(token, **self.profile(first_name="Layla"))
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["user"]["full_name"], "Layla Smith")
+        self.assertNotEqual(body["token"], token)
+        self.assertEqual(auth.decode_token(body["token"])["full_name"], "Layla Smith")
+
+        me = self.http.get("/api/auth/me", headers=self.bearer(body["token"])).get_json()
+        self.assertEqual(me["user"]["first_name"], "Layla")
+
+    def test_email_change_requires_the_current_password(self):
+        token = self.register().get_json()["token"]
+        response = self.update_profile(token, **self.profile(email="new@example.com"))
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.get_json()["error"]["code"], "invalid_credentials")
+        self.assertEqual(self.login("new@example.com").status_code, 401)
+        self.assertEqual(self.login(VALID["email"]).status_code, 200)
+
+    def test_email_change_with_the_current_password(self):
+        token = self.register().get_json()["token"]
+        response = self.update_profile(
+            token,
+            **self.profile(email="New@Example.com", current_password=VALID["password"])
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["user"]["email"], "new@example.com")
+        self.assertEqual(auth.decode_token(body["token"])["email"], "new@example.com")
+        self.assertEqual(self.login("new@example.com").status_code, 200)
+        self.assertEqual(self.login(VALID["email"]).status_code, 401)
+
+    def test_email_taken_by_another_account_is_409(self):
+        self.register()
+        token = self.register(email="other@example.com").get_json()["token"]
+        response = self.update_profile(
+            token,
+            **self.profile(email=VALID["email"], current_password=VALID["password"])
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error"]["code"], "email_taken")
+
+    def test_profile_validation_errors(self):
+        token = self.register().get_json()["token"]
+        cases = [
+            self.profile(first_name=""),
+            self.profile(email="not-an-email"),
+            self.profile(last_name="x" * (auth.MAX_NAME + 1)),
+        ]
+        for payload in cases:
+            with self.subTest(payload=payload):
+                response = self.update_profile(token, **payload)
+                self.assertEqual(response.status_code, 400)
+
+    def test_password_change_replaces_the_old_password(self):
+        token = self.register().get_json()["token"]
+        response = self.change_password(
+            token,
+            current_password=VALID["password"],
+            new_password="evenbetter1",
+            confirm_password="evenbetter1",
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(self.login(VALID["email"], VALID["password"]).status_code, 401)
+        self.assertEqual(self.login(VALID["email"], "evenbetter1").status_code, 200)
+
+    def test_password_change_requires_the_current_password(self):
+        token = self.register().get_json()["token"]
+        response = self.change_password(
+            token,
+            current_password="wrong-password",
+            new_password="evenbetter1",
+            confirm_password="evenbetter1",
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(self.login(VALID["email"], VALID["password"]).status_code, 200)
+
+    def test_password_change_validation(self):
+        token = self.register().get_json()["token"]
+        mismatch = self.change_password(
+            token,
+            current_password=VALID["password"],
+            new_password="evenbetter1",
+            confirm_password="different1",
+        )
+        self.assertEqual(mismatch.status_code, 400)
+        self.assertEqual(mismatch.get_json()["error"]["code"], "password_mismatch")
+
+        short = self.change_password(
+            token,
+            current_password=VALID["password"],
+            new_password="short",
+            confirm_password="short",
+        )
+        self.assertEqual(short.status_code, 400)
+
+    def test_existing_tokens_stay_valid_after_a_password_change(self):
+        token = self.register().get_json()["token"]
+        self.change_password(
+            token,
+            current_password=VALID["password"],
+            new_password="evenbetter1",
+            confirm_password="evenbetter1",
+        )
+        # stateless JWTs: sessions elsewhere are not revoked (documented behaviour)
+        self.assertEqual(self.http.get("/api/auth/me", headers=self.bearer(token)).status_code, 200)
+
+    def test_profile_and_password_api_require_a_token(self):
+        profile = self.http.patch("/api/auth/profile", json=self.profile())
+        password = self.http.post(
+            "/api/auth/password",
+            json={"current_password": "x", "new_password": "y", "confirm_password": "y"},
+        )
+        self.assertEqual(profile.status_code, 401)
+        self.assertEqual(password.status_code, 401)
 
 
 class TestPages(AuthTestCase):
@@ -306,6 +437,16 @@ class TestPages(AuthTestCase):
         self.assertIn(b'data-endpoint="/api/auth/register"', response.data)
         for field in (b"first_name", b"last_name", b"email", b"password", b"confirm_password"):
             self.assertIn(b'data-field="' + field + b'"', response.data)
+
+    def test_settings_page_is_a_data_free_shell(self):
+        response = self.http.get("/settings")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"settings.js", response.data)
+        self.assertIn(b"session.js", response.data)
+        self.assertIn(b'id="profile-form"', response.data)
+        self.assertIn(b'id="password-form"', response.data)
+        # the shell carries no account data; /api/auth/me fills it in
+        self.assertNotIn(b"@example.com", response.data)
 
     def test_root_redirects_to_login(self):
         response = self.http.get("/")

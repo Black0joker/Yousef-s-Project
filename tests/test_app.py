@@ -162,7 +162,7 @@ class TestPages(AppTestCase):
         self.assertIn(b'id="lang-label"', body)
 
     def test_pages_have_theme_support(self):
-        for path in ("/login", "/register", "/chat"):
+        for path in ("/login", "/register", "/chat", "/settings"):
             with self.subTest(path=path):
                 body = self.http.get(path).data
                 self.assertIn(b"theme.js", body, "theme bootstrap script missing")
@@ -171,7 +171,7 @@ class TestPages(AppTestCase):
 
     def test_theme_script_is_loaded_before_the_stylesheet(self):
         # it must run before first paint, otherwise the wrong theme flashes
-        for path in ("/login", "/register", "/chat"):
+        for path in ("/login", "/register", "/chat", "/settings"):
             with self.subTest(path=path):
                 body = self.http.get(path).get_data(as_text=True)
                 self.assertLess(
