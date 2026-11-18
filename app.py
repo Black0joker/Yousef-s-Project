@@ -17,8 +17,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
-from typing import Any, Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, stream_with_context
 
@@ -219,6 +221,46 @@ def memory_toolset():
         display_name=display_name,
     )
     return tools, log_tool_handlers(handlers, user_id=user_id)
+
+
+# --- active generations ---------------------------------------------------
+
+#: Streaming responses currently connected to a provider, keyed by stream id.
+#: Entries are scoped to one JWT user id and removed in ``generate()``'s finally.
+_ACTIVE_STREAMS: Dict[str, Dict[str, Any]] = {}
+_ACTIVE_LOCK = threading.Lock()
+
+
+def register_stream(user_id: Any) -> Tuple[str, threading.Event, Dict[str, Any]]:
+    """Register a generation and return ``(stream_id, cancel_event, entry)``."""
+    stream_id = uuid.uuid4().hex
+    cancel = threading.Event()
+    entry: Dict[str, Any] = {"user_id": user_id, "cancel": cancel, "close": None}
+    with _ACTIVE_LOCK:
+        _ACTIVE_STREAMS[stream_id] = entry
+    return stream_id, cancel, entry
+
+
+def unregister_stream(stream_id: str) -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE_STREAMS.pop(stream_id, None)
+
+
+def stop_stream(user_id: Any, stream_id: str) -> bool:
+    """Cancel one of ``user_id``'s generations; never touches another account's."""
+    with _ACTIVE_LOCK:
+        entry = _ACTIVE_STREAMS.get(stream_id)
+        if entry is None or entry.get("user_id") != user_id:
+            return False
+        cancel = entry["cancel"]
+        closer = entry.get("close")
+    cancel.set()
+    if closer is not None:
+        try:
+            closer()  # closes the provider response, unblocking a silent stream
+        except Exception:  # already closed / disconnected
+            pass
+    return True
 
 
 # --- message handling -----------------------------------------------------
@@ -466,14 +508,35 @@ def api_chat_stream():
         },
     )
     tools, handlers = memory_toolset()
+    user_id = (auth.current_user() or {}).get("id")
+    stream_id, cancel, entry = register_stream(user_id)
+
+    def on_open(response: Any) -> None:
+        """Expose the live provider response so /api/chat/stop can close it."""
+        with _ACTIVE_LOCK:
+            entry["close"] = response.close
+        if cancel.is_set():  # stopped before the provider connected
+            response.close()
 
     def generate():
         started = time.perf_counter()
         outcome = "ok"
+        reason = "finished"
         error_code: Optional[str] = None
         finish_reason: Optional[str] = None
+        stopped = False
+        events = client.run_tools_events(
+            messages=payload,
+            tools=tools,
+            handlers=handlers,
+            cancel=cancel,
+            on_open=on_open,
+        )
         try:
-            for event in client.run_tools_events(messages=payload, tools=tools, handlers=handlers):
+            for event in events:
+                if cancel.is_set():
+                    stopped = True
+                    break
                 if event["type"] == "delta" and event.get("content"):
                     yield sse({"delta": event["content"]})
                 elif event["type"] == "reasoning" and event.get("content"):
@@ -499,45 +562,79 @@ def api_chat_stream():
                             "usage": event.get("usage"),
                         }
                     )
+            if cancel.is_set():
+                stopped = True
+
+            if stopped:
+                outcome = "stopped"
+                reason = "stopped"
+                yield sse({"stopped": True})
+        except GeneratorExit:
+            # the browser went away; the finally block closes the provider
+            reason = "disconnected"
+            outcome = "stopped"
+            raise
+        except (BrokenPipeError, ConnectionResetError):
+            reason = "disconnected"
+            outcome = "stopped"
+            return
         except TokenHarborError as exc:
-            outcome = "error"
-            error_code = exc.code
-            logger.error(
-                "chat.stream.error",
-                extra={
-                    "event": "chat.stream.error",
-                    "streaming": True,
-                    "error_code": exc.code,
-                    "error_type": type(exc).__name__,
-                    "status": error_status(exc),
-                    "retryable": exc.retryable,
-                    "duration_ms": elapsed_ms(started),
-                    "outcome": "error",
-                },
-            )
-            yield sse(error_body(exc))
+            if cancel.is_set():
+                outcome = "stopped"
+                reason = "stopped"
+                yield sse({"stopped": True})
+            else:
+                outcome = "error"
+                reason = "error"
+                error_code = exc.code
+                logger.error(
+                    "chat.stream.error",
+                    extra={
+                        "event": "chat.stream.error",
+                        "streaming": True,
+                        "error_code": exc.code,
+                        "error_type": type(exc).__name__,
+                        "status": error_status(exc),
+                        "retryable": exc.retryable,
+                        "duration_ms": elapsed_ms(started),
+                        "outcome": "error",
+                    },
+                )
+                yield sse(error_body(exc))
         except Exception as exc:  # never leak a traceback into the stream
-            outcome = "error"
-            error_code = "server_error"
-            logger.exception(
-                "chat.stream.error",
-                extra={
-                    "event": "chat.stream.error",
-                    "streaming": True,
-                    "error_code": error_code,
-                    "error_type": type(exc).__name__,
-                    "duration_ms": elapsed_ms(started),
-                    "outcome": "error",
-                },
-            )
-            yield sse({"error": {"code": error_code, "message": str(exc)}})
+            if cancel.is_set():
+                outcome = "stopped"
+                reason = "stopped"
+                yield sse({"stopped": True})
+            else:
+                outcome = "error"
+                reason = "error"
+                error_code = "server_error"
+                logger.exception(
+                    "chat.stream.error",
+                    extra={
+                        "event": "chat.stream.error",
+                        "streaming": True,
+                        "error_code": error_code,
+                        "error_type": type(exc).__name__,
+                        "duration_ms": elapsed_ms(started),
+                        "outcome": "error",
+                    },
+                )
+                yield sse({"error": {"code": error_code, "message": str(exc)}})
         finally:
+            try:
+                events.close()  # runs the provider response.close() in core
+            except Exception:
+                pass
+            unregister_stream(stream_id)
             logger.info(
                 "chat.stream.done",
                 extra={
                     "event": "chat.stream.done",
                     "streaming": True,
                     "finish_reason": finish_reason,
+                    "reason": reason,
                     "duration_ms": elapsed_ms(started),
                     "outcome": outcome,
                     "error_code": error_code,
@@ -549,8 +646,23 @@ def api_chat_stream():
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",  # don't buffer behind a reverse proxy
         "Connection": "keep-alive",
+        "X-Stream-ID": stream_id,
     }
     return Response(stream_with_context(generate()), mimetype="text/event-stream", headers=headers)
+
+
+@app.post("/api/chat/stop")
+def api_chat_stop():
+    """Stop one of the caller's active generations, closing the provider link."""
+    claims = auth.current_user() or {}
+    data = request.get_json(silent=True) or {}
+    stream_id = data.get("id")
+    if not isinstance(stream_id, str) or not stream_id.strip():
+        return (
+            jsonify({"error": {"code": "invalid_request", "message": "`id` is required."}}),
+            400,
+        )
+    return jsonify({"stopped": stop_stream(claims.get("id"), stream_id.strip())})
 
 
 if __name__ == "__main__":

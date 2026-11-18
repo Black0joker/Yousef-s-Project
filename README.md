@@ -285,6 +285,31 @@ data: {"delta":"Saved."}
 stores the status in chat history. Tool arguments and results are not sent to the browser. The configured
 model must support tool calling (`TH_MODEL`).
 
+### Stopping generation
+
+Every streamed response carries an `X-Stream-ID` header. Send it back to stop
+that generation:
+
+```jsonc
+// POST /api/chat/stop
+{ "id": "4f1c9e7a…" }        // 200 {"stopped": true} | {"stopped": false}
+```
+
+- The id is scoped to the signed-in account: another user's id (or a stale one)
+  returns `{"stopped": false}` and changes nothing.
+- Stopping sets a cancel flag **and** closes the provider response, so a silent
+  upstream is cut immediately rather than on the next token.
+- The stream then ends with `data: {"stopped":true}` followed by `data: [DONE]`.
+  The stopped turn is rolled back: the user message and any partial answer are
+  removed from the transcript and from browser history, and the typed text is
+  put back in the composer so it can be edited or resent.
+- If the browser vanishes instead of calling the endpoint, the WSGI server closes
+  the response generator and the server severs the provider connection the same
+  way (`chat.stream.done … reason=disconnected`).
+- Stopping requires a concurrent server: the Flask dev server works, gunicorn
+  needs `--threads`, and single-threaded sync workers cannot serve the stop
+  request while a stream is running.
+
 ## Logging
 
 Logs go to stdout and a rotating file (`instance/app.log` by default). Set

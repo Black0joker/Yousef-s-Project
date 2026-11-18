@@ -422,6 +422,61 @@ class TestStreaming(ClientTestCase):
         client = self.new_client(base=base)
         self.assertEqual("".join(client.stream("Hi")), "ok")
 
+    # -- cancellation ------------------------------------------------------
+
+    def test_cancel_stops_the_stream_and_closes_the_provider(self):
+        class BlockingResponse:
+            def __init__(self):
+                self.closed = False
+                self.release = threading.Event()
+
+            def iter_lines(self, decode_unicode=True):
+                yield 'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+                self.release.wait(2)
+
+            def close(self):
+                self.closed = True
+                self.release.set()
+
+        client = self.new_client(base="http://127.0.0.1:1")
+        response = BlockingResponse()
+        client._open_stream = lambda payload: response  # type: ignore[method-assign]
+        opened = []
+        cancel = threading.Event()
+
+        events = client.stream_events("hi", cancel=cancel, on_open=opened.append)
+        self.assertEqual(next(events), {"type": "delta", "content": "Hi", "reasoning": None})
+
+        self.assertEqual(opened, [response])
+        cancel.set()
+        response.close()
+        self.assertEqual(list(events), [])  # no done event, no exception
+        self.assertTrue(response.closed)
+
+    def test_cancel_before_the_provider_opens_is_harmless(self):
+        class SilentResponse:
+            def __init__(self):
+                self.closed = False
+
+            def iter_lines(self, decode_unicode=True):
+                raise AssertionError("must not read a cancelled stream")
+
+            def close(self):
+                self.closed = True
+
+        client = self.new_client(base="http://127.0.0.1:1")
+        response = SilentResponse()
+        client._open_stream = lambda payload: response  # type: ignore[method-assign]
+        cancel = threading.Event()
+        cancel.set()
+        opened = []
+        self.assertEqual(
+            list(client.stream_events("hi", cancel=cancel, on_open=opened.append)),
+            [],
+        )
+        self.assertEqual(opened, [response])
+        self.assertTrue(response.closed)
+
 
 # --- tool calling ---------------------------------------------------------
 

@@ -18,6 +18,7 @@ import inspect
 import json
 import os
 import random
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import (
@@ -654,6 +655,8 @@ class TokenHarbor:
         *,
         model: Optional[str] = None,
         include_usage: bool = False,
+        cancel: Optional[threading.Event] = None,
+        on_open: Optional[Callable[[Any], None]] = None,
         **params: Any,
     ) -> Iterator[Dict[str, Any]]:
         """Yield typed SSE events: ``delta``, ``reasoning`` and a final ``done``.
@@ -661,17 +664,26 @@ class TokenHarbor:
         Each event is a dict with a ``type`` key. ``delta``/``reasoning`` carry
         ``content``; ``done`` carries ``finish_reason``, (optional) ``usage`` and
         a ``tool_calls`` list of :class:`ToolCall` objects (empty if none).
+
+        ``cancel`` lets another thread stop generation: the event is checked
+        before every chunk, and setting it also closes the upstream response
+        from that thread, which unblocks a silent provider. ``on_open`` receives
+        the live response object so callers can close it on demand.
         """
         payload = self._build_payload(messages, model, stream=True, params=params)
         if include_usage:
             payload.setdefault("stream_options", {"include_usage": True})
 
         response = self._open_stream(payload)
+        if on_open is not None:
+            on_open(response)
         finish_reason: Optional[str] = None
         usage: Optional[Dict[str, Any]] = None
         tool_slots: Dict[int, Dict[str, str]] = {}
         try:
             for raw_line in response.iter_lines(decode_unicode=True):
+                if cancel is not None and cancel.is_set():
+                    return
                 if raw_line is None:
                     continue
                 line = raw_line.strip()
@@ -722,6 +734,8 @@ class TokenHarbor:
 
                 reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                 content = delta.get("content")
+                if cancel is not None and cancel.is_set():
+                    return
                 if content:
                     yield {"type": "delta", "content": content, "reasoning": reasoning}
                 elif reasoning:
@@ -735,6 +749,8 @@ class TokenHarbor:
                 }
                 for _, slot in sorted(tool_slots.items())
             ]
+            if cancel is not None and cancel.is_set():
+                return
             yield {
                 "type": "done",
                 "content": "",
@@ -742,6 +758,12 @@ class TokenHarbor:
                 "usage": usage,
                 "tool_calls": parse_tool_calls(raw_calls),
             }
+        except Exception:
+            # closing the response from the stop endpoint surfaces here as a
+            # connection error; that is a normal cancellation, not a failure
+            if cancel is not None and cancel.is_set():
+                return
+            raise
         finally:
             response.close()
 
@@ -861,6 +883,8 @@ class TokenHarbor:
         model: Optional[str] = None,
         max_rounds: int = 8,
         messages: Any = None,
+        cancel: Optional[threading.Event] = None,
+        on_open: Optional[Callable[[Any], None]] = None,
         **params: Any,
     ) -> Iterator[Dict[str, Any]]:
         """Run the tool loop and yield typed events, including tool lifecycle.
@@ -873,17 +897,27 @@ class TokenHarbor:
             {"type": "tool_end", "name": "save_memory", "id": "call_1", "ok": True}
 
         Only the final round's ``done`` event is emitted, so clients can treat it
-        as the end of the whole turn.
+        as the end of the whole turn. ``cancel`` stops the loop between rounds as
+        well as between chunks; ``on_open`` is forwarded to :meth:`stream_events`.
         """
         working = self._working_messages(messages, content, self.messages)
         schemas, registry = _prepare_tools(tools, handlers)
         rounds = 0
         while True:
+            if cancel is not None and cancel.is_set():
+                return
             parts: List[str] = []
             tool_calls: List[ToolCall] = []
             final_event: Optional[Dict[str, Any]] = None
 
-            for event in self.stream_events(working, model=model, tools=schemas, **params):
+            for event in self.stream_events(
+                working,
+                model=model,
+                tools=schemas,
+                cancel=cancel,
+                on_open=on_open,
+                **params,
+            ):
                 if event["type"] == "done":
                     tool_calls = event.get("tool_calls") or []
                     final_event = event
@@ -898,6 +932,8 @@ class TokenHarbor:
                 assistant_message["tool_calls"] = [call.to_raw() for call in tool_calls]
             working.append(assistant_message)  # type: ignore[arg-type]
 
+            if cancel is not None and cancel.is_set():
+                return
             if not tool_calls:
                 if final_event is not None:
                     yield final_event
@@ -911,6 +947,8 @@ class TokenHarbor:
             rounds += 1
 
             for call in tool_calls:
+                if cancel is not None and cancel.is_set():
+                    return
                 yield {"type": "tool_start", "name": call.name, "id": call.id}
                 result, ok = self._invoke_tool_result(call, registry)
                 yield {"type": "tool_end", "name": call.name, "id": call.id, "ok": ok}

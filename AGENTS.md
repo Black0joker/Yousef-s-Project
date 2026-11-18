@@ -126,6 +126,19 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   `{"done": ...}` frame, and the literal `data: [DONE]` terminator.
   `TokenHarbor.run_tools_events()` emits the tool lifecycle; the app forwards
   names/status only, never tool arguments or results.
+- Stopping is id-based: the stream response carries `X-Stream-ID`, and
+  `POST /api/chat/stop {"id": ...}` sets that entry's `threading.Event` and calls
+  the stored provider `response.close`. `_ACTIVE_STREAMS` in `app.py` is
+  lock-guarded, scoped to the JWT user id, and must be unregistered in
+  `generate()`'s `finally`. Never close another user's stream; unknown/foreign
+  ids return `{"stopped": false}`.
+- `core.stream_events` / `run_tools_events` take `cancel=` and `on_open=`; a
+  provider exception while cancelled is a normal stop. Keep `events.close()` in
+  the route's `finally` so the provider link dies even on disconnect, and give
+  the stop request a concurrent server (dev server / threaded workers).
+- A stopped turn is rolled back: remove both bubbles, splice the entries out of
+  local history, restore the typed text into the composer, and never route an
+  `AbortError` through `markError`.
 - Tool status labels live in `static/chat.js` (`STRINGS.tool*`) and are shown in
   a transient element under the assistant bubble. They must not be written to
   `th_chat_history_*`; clear them when answer text starts or an error occurs,

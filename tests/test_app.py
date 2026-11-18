@@ -591,5 +591,130 @@ class TestMemoryTools(AppTestCase):
         )
 
 
+class TestStreamStop(AppTestCase):
+    def setUp(self):
+        super().setUp()
+        with app_module._ACTIVE_LOCK:
+            app_module._ACTIVE_STREAMS.clear()
+
+    def open_stream(self, fake):
+        """Start the stream view inside a request context, without consuming it."""
+        from flask import g
+
+        patcher = patch.object(app_module, "get_client", lambda: fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        context = app_module.app.test_request_context(
+            "/api/chat/stream",
+            method="POST",
+            data=json.dumps({"messages": [{"role": "user", "content": "hi"}]}),
+            content_type="application/json",
+        )
+        context.push()
+        self.addCleanup(context.pop)
+
+        me = self.http.get("/api/auth/me", headers=self.headers).get_json()["user"]
+        g.user = {"id": me["id"], "email": me["email"], "full_name": me["full_name"]}
+        return app_module.api_chat_stream(), me["id"]
+
+    def stoppable_client(self):
+        class Upstream:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        class StoppableClient:
+            def __init__(self):
+                self.upstream = Upstream()
+                self.cancel = None
+
+            def run_tools_events(
+                self, messages=None, tools=None, handlers=None, cancel=None, on_open=None, **params
+            ):
+                self.cancel = cancel
+                if on_open is not None:
+                    on_open(self.upstream)
+                try:
+                    yield {"type": "delta", "content": "partial"}
+                    cancel.wait(2)
+                finally:
+                    self.upstream.close()
+
+        return StoppableClient()
+
+    def test_stop_endpoint_requires_auth_and_an_id(self):
+        self.assertEqual(self.http.post("/api/chat/stop", json={"id": "x"}).status_code, 401)
+        missing = self.http.post("/api/chat/stop", json={}, headers=self.headers)
+        self.assertEqual(missing.status_code, 400)
+        self.assertEqual(missing.get_json()["error"]["code"], "invalid_request")
+
+    def test_unknown_stream_reports_false(self):
+        response = self.http.post(
+            "/api/chat/stop", json={"id": "does-not-exist"}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"stopped": False})
+
+    def test_stream_id_header_and_registry_cleanup(self):
+        events = [
+            {"type": "delta", "content": "x"},
+            {"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []},
+        ]
+        self.use_client(FakeClient(events=events))
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers.get("X-Stream-ID"))
+        self.assertIn(b'"delta": "x"', response.data)
+        self.assertEqual(app_module._ACTIVE_STREAMS, {})
+
+    def test_stop_cancels_the_stream_and_closes_the_provider(self):
+        fake = self.stoppable_client()
+        response, user_id = self.open_stream(fake)
+        stream_id = response.headers["X-Stream-ID"]
+        self.assertIn(stream_id, app_module._ACTIVE_STREAMS)
+
+        generator = response.response
+        first = next(generator)
+        self.assertIn('"delta": "partial"', first)
+
+        self.assertTrue(app_module.stop_stream(user_id, stream_id))
+        rest = "".join(generator)
+        self.assertIn('"stopped": true', rest)
+        self.assertIn("data: [DONE]", rest)
+        self.assertTrue(fake.upstream.closed)
+        self.assertNotIn(stream_id, app_module._ACTIVE_STREAMS)
+
+    def test_another_user_cannot_stop_the_stream(self):
+        fake = self.stoppable_client()
+        response, user_id = self.open_stream(fake)
+        stream_id = response.headers["X-Stream-ID"]
+        generator = response.response
+        next(generator)
+
+        self.assertFalse(app_module.stop_stream(user_id + 1, stream_id))
+        self.assertIn(stream_id, app_module._ACTIVE_STREAMS)
+
+        self.assertTrue(app_module.stop_stream(user_id, stream_id))
+        "".join(generator)
+        self.assertTrue(fake.upstream.closed)
+
+    def test_closing_the_generator_treats_it_as_a_disconnect(self):
+        fake = self.stoppable_client()
+        response, _user_id = self.open_stream(fake)
+        generator = response.response
+        next(generator)
+
+        generator.close()  # what the WSGI server does when the browser goes away
+        self.assertTrue(fake.upstream.closed)
+        self.assertEqual(app_module._ACTIVE_STREAMS, {})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

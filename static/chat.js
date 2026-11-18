@@ -28,6 +28,7 @@
       placeholderShort: "Type a message…",
       thinking: "Thinking…",
       noResponse: "(no response)",
+      stop: "Stop",
       toggleLang: "Switch language",
       deleteReply: "Delete this message and its reply",
       deleteOne: "Delete this message",
@@ -50,6 +51,7 @@
       placeholderShort: "اكتب رسالة…",
       thinking: "جارٍ التفكير...",
       noResponse: "(لا يوجد رد)",
+      stop: "إيقاف",
       toggleLang: "تغيير اللغة",
       deleteReply: "احذف هذه الرسالة وردها",
       deleteOne: "احذف هذه الرسالة",
@@ -67,6 +69,9 @@
   function normalizeLang(value) {
     return LANG_ALIASES[String(value || "").trim().toLowerCase()] || "en";
   }
+
+  // the in-flight turn: AbortController + the server's X-Stream-ID
+  var activeTurn = null;
 
   function loadLanguage() {
     try {
@@ -120,6 +125,7 @@
   var form = document.getElementById("composer");
   var input = document.getElementById("input");
   var sendBtn = document.getElementById("send");
+  var stopBtn = document.getElementById("stop");
   var clearBtn = document.getElementById("clear");
   var statusEl = document.getElementById("status");
   var statusDot = document.getElementById("status-dot");
@@ -180,6 +186,10 @@
     if (langToggle) {
       langToggle.setAttribute("aria-label", strings.toggleLang);
       langToggle.setAttribute("title", strings.toggleLang);
+    }
+    if (stopBtn) {
+      stopBtn.setAttribute("aria-label", strings.stop);
+      stopBtn.title = strings.stop;
     }
   }
 
@@ -341,6 +351,12 @@
   function setBusy(busy) {
     sendBtn.disabled = busy;
     input.disabled = busy;
+    if (stopBtn) {
+      stopBtn.classList.toggle("hidden", !busy);
+      stopBtn.disabled = false;
+      stopBtn.setAttribute("aria-label", str().stop);
+      stopBtn.title = str().stop;
+    }
     statusEl.textContent = busy ? str().thinking : "";
     statusDot.style.display = busy ? "inline-block" : "none";
     if (!busy) input.focus();
@@ -399,7 +415,7 @@
     var userEntry = { id: newId(), role: "user", content: text };
     history.push(userEntry);
     saveHistory();
-    addUserMessage(text, userEntry.id, true);
+    var userParts = addUserMessage(text, userEntry.id, true);
 
     var assistantEntry = { id: newId(), role: "assistant", content: "" };
     var parts = createAssistantMessage(assistantEntry.id);
@@ -408,8 +424,15 @@
 
     var answer = "";
     var streamError = null;
+    var stoppedByServer = false;
     var activityTimer = null;
     var toolRunning = false;
+    var turn = {
+      controller: new AbortController(),
+      streamId: null,
+      stopped: false
+    };
+    activeTurn = turn;
 
     function hideActivity() {
       if (activityTimer) {
@@ -418,6 +441,26 @@
       }
       toolRunning = false;
       parts.activity.hidden = true;
+    }
+
+    function rollbackStopped() {
+      hideActivity();
+      // drop the whole turn from the transcript and local history
+      if (parts.row && parts.row.parentNode) {
+        parts.row.parentNode.removeChild(parts.row);
+      }
+      if (userParts && userParts.row && userParts.row.parentNode) {
+        userParts.row.parentNode.removeChild(userParts.row);
+      }
+      var userIndex = history.indexOf(userEntry);
+      if (userIndex !== -1) history.splice(userIndex, 1);
+      var assistantIndex = history.indexOf(assistantEntry);
+      if (assistantIndex !== -1) history.splice(assistantIndex, 1);
+      saveHistory();
+      // put the text back in the composer so it can be edited or resent
+      input.value = text;
+      input.style.height = "auto";
+      input.focus();
     }
 
     function showToolEvent(tool) {
@@ -452,6 +495,7 @@
         }),
         language: lang,
       }),
+      signal: turn.controller.signal,
     })
       .then(function (response) {
         if (!response.ok || !response.body) {
@@ -459,6 +503,7 @@
             throw new Error(errorText(payload, response.status));
           });
         }
+        turn.streamId = response.headers.get("X-Stream-ID");
         return consume(response.body, function (event) {
           if (event.error) {
             hideActivity();
@@ -476,10 +521,16 @@
             scrollToBottom();
           } else if (event.done) {
             if (toolRunning) hideActivity();
+          } else if (event.stopped) {
+            stoppedByServer = true;
           }
         });
       })
       .then(function () {
+        if (turn.stopped || stoppedByServer) {
+          rollbackStopped();
+          return;
+        }
         if (toolRunning) hideActivity();
         parts.bubble.classList.remove("is-streaming");
         if (streamError) throw new Error(errorText({ error: streamError }, 0));
@@ -491,16 +542,47 @@
         saveHistory();
       })
       .catch(function (err) {
+        if (turn.stopped || stoppedByServer) {
+          rollbackStopped();
+          return;
+        }
         hideActivity();
         parts.bubble.classList.remove("is-streaming");
         markError(parts.row, parts.bubble, err.message);
       })
       .then(function () {
         setBusy(false);
+        activeTurn = null;
       });
   }
 
   // --- events -------------------------------------------------------------
+
+  if (stopBtn) {
+    stopBtn.addEventListener("click", function () {
+      var turn = activeTurn;
+      if (!turn || turn.stopped) return;
+      turn.stopped = true;
+      stopBtn.disabled = true;
+      // ask the server to stop first (it closes the provider link), then drop
+      // our own connection
+      var request = turn.streamId
+        ? Session.authFetch("/api/chat/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: turn.streamId }),
+            allowUnauthorized: true,
+          })
+        : Promise.resolve();
+      request
+        .catch(function () {
+          /* the abort below still ends the turn locally */
+        })
+        .then(function () {
+          turn.controller.abort();
+        });
+    });
+  }
 
   form.addEventListener("submit", function (event) {
     event.preventDefault();

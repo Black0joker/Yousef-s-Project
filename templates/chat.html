@@ -138,6 +138,10 @@
 
           <textarea class="max-h-36 flex-1 resize-none overflow-y-auto border-0 bg-transparent py-1.5 text-[15px] leading-relaxed text-brand-950 placeholder:text-brand-400 focus:outline-none dark:text-sand-100 dark:placeholder:text-sand-500" id="input" placeholder="Type a message…  (Enter to send, Shift+Enter for a new line)" rows="1" autofocus></textarea>
 
+          <button aria-label="Stop generating" title="Stop generating" class="hidden h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border border-sand-300 bg-white text-brand-700 transition-colors hover:bg-sand-100 active:scale-95 dark:border-white/15 dark:bg-white/5 dark:text-sand-200 dark:hover:bg-white/10 flex" id="stop" type="button">
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">stop_circle</span>
+          </button>
+
           <button aria-label="Send message" class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-brand-900 text-white shadow-sm transition-all hover:bg-brand-800 hover:shadow active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-brand-200 dark:text-brand-950 dark:hover:bg-brand-100" id="send" type="submit">
             <span class="material-symbols-outlined text-[18px]" aria-hidden="true">arrow_upward</span>
           </button>
