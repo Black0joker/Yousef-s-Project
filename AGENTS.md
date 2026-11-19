@@ -348,6 +348,20 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   microphone hears SAGE's own voice, the barge-in handler stops playback, and
   the user sees text with no sound. `/chat` must link to `/call` (the voice UI
   only exists there).
+- **Never call `recognition.start()` synchronously from `onend` (or from a
+  `stop()` in the same task).** Chrome throws `InvalidStateError`, and the old
+  `catch { /* already restarting */ }` swallowed it, so the mic stayed granted
+  but dead for the rest of the call. Always go through `scheduleRestart()`,
+  which defers by `RESTART_DELAY_MS` and re-checks `shouldBeListening()`.
+- Recognition state is `recognitionRunning` (set in `onstart`/`onend`), not
+  `listening`, which is only a status-line hint. `startListening()` returns
+  early while running; `startWatchdog()` restarts a session that vanished
+  without firing `onend`.
+- `onerror` must handle every code. `not-allowed`, `service-not-allowed`,
+  `audio-capture`, and `language-not-supported` are fatal (stop retrying,
+  disable the mic, explain why); `network` retries with backoff;
+  `no-speech`/`aborted` are routine and left to `onend`. Ignoring a code makes a
+  broken recognizer indistinguishable from a working one.
 
 ### Streaming and UI
 

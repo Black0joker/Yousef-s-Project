@@ -30,6 +30,9 @@
       voiceUnavailable: "Voice is unavailable. Set a fresh ELEVENLABS_TOKEN to hear replies.",
       voiceExpired: "The voice token has expired. Refresh ELEVENLABS_TOKEN to hear replies.",
       micDenied: "Microphone permission was denied. You can still type.",
+      micUnavailable: "No microphone was found, or it is in use by another app. You can still type.",
+      micLanguage: "Speech recognition does not support this language. You can still type.",
+      micNetwork: "Speech recognition lost its connection. Retrying...",
       noSpeech: "Speech recognition is not available in this browser. You can still type.",
       audioBlocked: "The browser blocked audio. Tap Start call once, then try again.",
       error: "Something went wrong.",
@@ -57,6 +60,9 @@
       voiceUnavailable: "الصوت غير متاح. أضف ELEVENLABS_TOKEN جديدًا لسماع الردود.",
       voiceExpired: "انتهت صلاحية رمز الصوت. حدّث ELEVENLABS_TOKEN لسماع الردود.",
       micDenied: "تم رفض إذن الميكروفون. يمكنك الكتابة بدلًا من ذلك.",
+      micUnavailable: "لم يتم العثور على ميكروفون أو أنه مستخدم في تطبيق آخر. يمكنك الكتابة.",
+      micLanguage: "التعرف على الكلام لا يدعم هذه اللغة. يمكنك الكتابة.",
+      micNetwork: "انقطع اتصال التعرف على الكلام. جارٍ إعادة المحاولة...",
       noSpeech: "التعرف على الكلام غير متاح في هذا المتصفح. يمكنك الكتابة.",
       audioBlocked: "منع المتصفح تشغيل الصوت. اضغط «بدء المكالمة» مرة ثم حاول مجددًا.",
       error: "حدث خطأ ما.",
@@ -197,8 +203,7 @@
     callSubtitle.textContent = str().subtitle;
     startLabel.textContent = str().start;
     hangupLabel.textContent = str().hangup;
-    micLabel.textContent = micBtn.getAttribute("aria-pressed") === "true" ? str().mute : str().unmute;
-    input.setAttribute("placeholder", str().placeholder);
+    micLabel.textContent = micBtn.getAttribute("aria-pressed") === "true" ? str().mute : str().unmute;    input.setAttribute("placeholder", str().placeholder);
     callBadge.textContent = str().badge;
     if (langLabel) langLabel.textContent = str().code;
     if (!active) callStatus.textContent = str().ready;
@@ -254,6 +259,71 @@
 
   var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
+  // Chrome requires a gap between one session ending and the next starting.
+  // Calling start() straight from onend throws InvalidStateError, which used to
+  // be swallowed, leaving the microphone granted but permanently idle.
+  var RESTART_DELAY_MS = 300;
+  // Chrome sometimes ends a continuous session without firing onend at all.
+  var WATCHDOG_MS = 1500;
+
+  var restartTimer = null;
+  var watchdogTimer = null;
+  var recognitionRunning = false;
+  var recognitionFatal = false;
+  var restartAttempts = 0;
+
+  function clearRestartTimer() {
+    if (restartTimer !== null) {
+      window.clearTimeout(restartTimer);
+      restartTimer = null;
+    }
+  }
+
+  function shouldBeListening() {
+    return active && !manualStop && !recognitionPaused && !speechBusy && !recognitionFatal;
+  }
+
+  function updateMicButton() {
+    var on = recognitionRunning || restartTimer !== null;
+    micBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    micLabel.textContent = on ? str().mute : str().unmute;
+  }
+
+  function scheduleRestart(delay) {
+    if (restartTimer !== null) return;
+    if (!shouldBeListening()) return;
+    restartTimer = window.setTimeout(function () {
+      restartTimer = null;
+      if (!shouldBeListening()) return;
+      startRecognitionNow();
+    }, delay == null ? RESTART_DELAY_MS : delay);
+  }
+
+  function startRecognitionNow() {
+    if (!recognition || recognitionFatal || recognitionRunning) return;
+    try {
+      recognition.start();
+    } catch (err) {
+      // "already started" is harmless; anything else means the session was
+      // rejected, so try again after a delay rather than dying silently.
+      if (err && err.name === "InvalidStateError") {
+        recognitionRunning = true;
+      } else {
+        scheduleRestart(RESTART_DELAY_MS * 2);
+      }
+    }
+  }
+
+  function fatalRecognition(message) {
+    recognitionFatal = true;
+    manualStop = true;
+    clearRestartTimer();
+    micBtn.disabled = true;
+    recognitionRunning = false;
+    updateMicButton();
+    showError(message);
+  }
+
   function setupRecognition() {
     if (!SpeechRecognition) {
       recognitionAvailable = false;
@@ -267,31 +337,50 @@
 
     recognition.onstart = function () {
       listening = true;
-      micBtn.setAttribute("aria-pressed", "true");
-      micLabel.textContent = str().mute;
+      recognitionRunning = true;
+      restartAttempts = 0;
+      updateMicButton();
       if (!busy && !speechBusy) setCallStatus(str().listening, "listening");
     };
 
     recognition.onend = function () {
       listening = false;
-      if (active && !manualStop && !recognitionPaused && !speechBusy) {
-        try {
-          recognition.start();
-        } catch (err) {
-          /* already restarting */
-        }
+      recognitionRunning = false;
+      updateMicButton();
+      if (shouldBeListening()) {
+        // never restart synchronously: Chrome rejects that
+        scheduleRestart(RESTART_DELAY_MS);
       } else if (!active) {
-        micBtn.setAttribute("aria-pressed", "false");
-        micLabel.textContent = str().unmute;
+        updateMicButton();
       }
     };
 
     recognition.onerror = function (event) {
-      if (event && event.error === "not-allowed") {
-        recognitionAvailable = false;
-        manualStop = true;
-        micBtn.disabled = true;
-        showError(str().micDenied);
+      var code = event && event.error ? event.error : "";
+      recognitionRunning = false;
+
+      if (code === "not-allowed" || code === "service-not-allowed") {
+        fatalRecognition(str().micDenied);
+        return;
+      }
+      if (code === "audio-capture") {
+        fatalRecognition(str().micUnavailable);
+        return;
+      }
+      if (code === "language-not-supported") {
+        fatalRecognition(str().micLanguage);
+        return;
+      }
+      if (code === "network") {
+        // Chrome's recognizer needs to reach its speech service.
+        showError(str().micNetwork);
+        restartAttempts += 1;
+        scheduleRestart(Math.min(8000, 1000 * restartAttempts));
+        return;
+      }
+      // no-speech / aborted are routine; onend schedules the next session.
+      if (code !== "no-speech" && code !== "aborted") {
+        scheduleRestart(RESTART_DELAY_MS * 2);
       }
     };
 
@@ -322,18 +411,37 @@
     recognitionAvailable = true;
   }
 
+  // If recognition should be running but is neither started nor scheduled,
+  // restart it. Covers Chrome dropping a session without firing onend.
+  function startWatchdog() {
+    if (watchdogTimer !== null) return;
+    watchdogTimer = window.setInterval(function () {
+      if (!shouldBeListening()) return;
+      if (recognitionRunning || restartTimer !== null) return;
+      scheduleRestart(0);
+    }, WATCHDOG_MS);
+  }
+
   function startListening() {
     if (!recognitionAvailable || !recognition) return;
     manualStop = false;
-    try {
-      recognition.start();
-    } catch (err) {
-      /* already running */
+    recognitionPaused = false;
+    if (recognitionFatal) {
+      // an explicit tap is the user's retry: clear the fatal state
+      recognitionFatal = false;
+      micBtn.disabled = false;
     }
+    if (recognitionRunning) {
+      updateMicButton();
+      return;
+    }
+    clearRestartTimer();
+    startRecognitionNow();
   }
 
   function stopListening() {
     manualStop = true;
+    clearRestartTimer();
     if (recognition) {
       try {
         recognition.stop();
@@ -342,6 +450,8 @@
       }
     }
     listening = false;
+    recognitionRunning = false;
+    updateMicButton();
   }
 
   // The microphone can otherwise hear the assistant's own audio and cancel
@@ -349,7 +459,8 @@
   function pauseRecognition() {
     if (!recognition) return;
     recognitionPaused = true;
-    if (listening) {
+    clearRestartTimer();
+    if (recognitionRunning) {
       try {
         recognition.stop();
       } catch (err) {
@@ -360,13 +471,9 @@
 
   function resumeRecognition() {
     recognitionPaused = false;
-    if (active && !manualStop && recognitionAvailable && !listening && !speechBusy) {
-      try {
-        recognition.start();
-      } catch (err) {
-        /* already running */
-      }
-    }
+    if (!shouldBeListening()) return;
+    if (recognitionRunning || restartTimer !== null) return;
+    scheduleRestart(RESTART_DELAY_MS);
   }
 
   // --- streaming ----------------------------------------------------------
@@ -630,10 +737,11 @@
     startBtn.classList.add("hidden");
     hangupBtn.classList.remove("hidden");
     micBtn.classList.remove("hidden");
-    micBtn.setAttribute("aria-pressed", recognitionAvailable ? "true" : "false");
-    micLabel.textContent = recognitionAvailable ? str().mute : str().unmute;
+    micBtn.disabled = !recognitionAvailable;
     setCallStatus(str().connecting, "listening");
+    startWatchdog();
     if (recognitionAvailable) startListening();
+    else updateMicButton();
     if (firstText) sendTurn(firstText, false);
     else sendTurn(null, true);
   }
@@ -644,6 +752,11 @@
     setBusy(false);
     stopSpeech();
     stopListening();
+    clearRestartTimer();
+    if (watchdogTimer !== null) {
+      window.clearInterval(watchdogTimer);
+      watchdogTimer = null;
+    }
     if (streamId) {
       Session.authFetch("/api/chat/stop", {
         method: "POST",
@@ -672,16 +785,13 @@
 
   micBtn.addEventListener("click", function () {
     if (!recognitionAvailable) return;
-    if (listening) {
+    if (listening || restartTimer !== null) {
       stopListening();
-      micBtn.setAttribute("aria-pressed", "false");
-      micLabel.textContent = str().unmute;
       setCallStatus(str().muted, null);
     } else {
       stopSpeech(); // tapping the mic while SAGE speaks interrupts the audio
       startListening();
-      micBtn.setAttribute("aria-pressed", "true");
-      micLabel.textContent = str().mute;
+      setCallStatus(str().listening, "listening");
     }
   });
 
