@@ -436,6 +436,129 @@ class MemoryTestCase(unittest.TestCase):
         self.assertIn("memory.query.invalid", events)
         self.assertTrue(all(getattr(record, "reason", None) for record in captured.records))
 
+    def test_single_valued_predicate_supersedes_without_replace(self):
+        # "my name is George" then "my name is Yousef": one active name, not two
+        memory.save_memory(
+            self.user_a,
+            {"facts": [{"entity": "Current User", "predicate": "name", "value": "George"}]},
+            connection=self.conn,
+        )
+        memory.save_memory(
+            self.user_a,
+            {"facts": [{"entity": "Current User", "predicate": "name", "value": "Yousef"}]},
+            connection=self.conn,
+        )
+
+        active = memory.query_memory(
+            self.user_a, entity="Current User", connection=self.conn
+        )
+        self.assertEqual([fact["value"] for fact in active["facts"]], ["Yousef"])
+
+        everything = memory.query_memory(
+            self.user_a, entity="Current User", include_expired=True, connection=self.conn
+        )
+        self.assertEqual(sorted(fact["value"] for fact in everything["facts"]), ["George", "Yousef"])
+        retired = [fact for fact in everything["facts"] if fact["value"] == "George"][0]
+        self.assertIsNotNone(retired["valid_until"])
+
+    def test_single_valued_matching_ignores_case_and_spacing(self):
+        memory.save_memory(
+            self.user_a,
+            {"facts": [{"entity": "Sara", "predicate": "Birthday", "value": "May 1"}]},
+            connection=self.conn,
+        )
+        memory.save_memory(
+            self.user_a,
+            {"facts": [{"entity": "Sara", "predicate": "birthday", "value": "May 2"}]},
+            connection=self.conn,
+        )
+        active = memory.query_memory(
+            self.user_a, entity="Sara", predicate="birthday", connection=self.conn
+        )
+        self.assertEqual([fact["value"] for fact in active["facts"]], ["May 2"])
+
+    def test_multi_valued_predicate_keeps_every_value(self):
+        # "I like tea" then "I like coffee": both are true, so both stay active
+        memory.save_memory(
+            self.user_a,
+            {"facts": [{"entity": "Current User", "predicate": "likes", "value": "tea"}]},
+            connection=self.conn,
+        )
+        memory.save_memory(
+            self.user_a,
+            {"facts": [{"entity": "Current User", "predicate": "likes", "value": "coffee"}]},
+            connection=self.conn,
+        )
+        active = memory.query_memory(
+            self.user_a, entity="Current User", connection=self.conn
+        )
+        self.assertEqual(sorted(fact["value"] for fact in active["facts"]), ["coffee", "tea"])
+
+    def test_resaving_the_same_value_does_not_duplicate(self):
+        payload = {
+            "facts": [{"entity": "Current User", "predicate": "name", "value": "Yousef"}]
+        }
+        memory.save_memory(self.user_a, payload, connection=self.conn)
+        memory.save_memory(self.user_a, payload, connection=self.conn)
+
+        everything = memory.query_memory(
+            self.user_a, entity="Current User", include_expired=True, connection=self.conn
+        )
+        self.assertEqual(len(everything["facts"]), 1)
+        self.assertIsNone(everything["facts"][0]["valid_until"])
+
+    def test_supersede_stays_inside_one_account(self):
+        memory.save_memory(
+            self.user_a,
+            {"facts": [{"entity": "Current User", "predicate": "name", "value": "George"}]},
+            connection=self.conn,
+        )
+        memory.save_memory(
+            self.user_b,
+            {"facts": [{"entity": "Current User", "predicate": "name", "value": "Yousef"}]},
+            connection=self.conn,
+        )
+        # user_a's fact is untouched by user_b's save
+        a_facts = memory.query_memory(
+            self.user_a, entity="Current User", include_expired=True, connection=self.conn
+        )
+        self.assertEqual([fact["value"] for fact in a_facts["facts"]], ["George"])
+        self.assertIsNone(a_facts["facts"][0]["valid_until"])
+
+    def test_explicit_replace_still_works_for_multi_valued_predicates(self):
+        memory.save_memory(
+            self.user_a,
+            {"facts": [{"entity": "Current User", "predicate": "likes", "value": "tea"}]},
+            connection=self.conn,
+        )
+        memory.save_memory(
+            self.user_a,
+            {
+                "facts": [
+                    {
+                        "entity": "Current User",
+                        "predicate": "likes",
+                        "value": "coffee",
+                        "replace": True,
+                    }
+                ]
+            },
+            connection=self.conn,
+        )
+        active = memory.query_memory(
+            self.user_a, entity="Current User", connection=self.conn
+        )
+        self.assertEqual([fact["value"] for fact in active["facts"]], ["coffee"])
+
+    def test_single_valued_predicate_set_is_not_over_broad(self):
+        # guarding the multi-valued contract: these must never auto-supersede
+        for predicate in ("likes", "hobby", "pet", "phone", "language"):
+            with self.subTest(predicate=predicate):
+                self.assertFalse(memory._is_single_valued(predicate))
+        for predicate in ("name", "Name", "date_of_birth", "birthday"):
+            with self.subTest(predicate=predicate):
+                self.assertTrue(memory._is_single_valued(predicate))
+
     def test_prompt_brief_covers_every_tool_parameter(self):
         brief = memory.prompt_brief()
         for schema in (memory.SAVE_MEMORY_SCHEMA, memory.RECALL_MEMORY_SCHEMA):

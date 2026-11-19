@@ -427,6 +427,82 @@ class TestProfileUpdates(AuthTestCase):
         self.assertEqual(password.status_code, 401)
 
 
+class TestSchemaMigration(unittest.TestCase):
+    """init_db() must upgrade a users table created before the new columns."""
+
+    def setUp(self):
+        self.path = os.path.join(_TMPDIR, "legacy.db")
+        os.environ["TH_DB_PATH"] = self.path
+        if os.path.exists(self.path):
+            os.remove(self.path)
+
+    def tearDown(self):
+        os.environ["TH_DB_PATH"] = os.path.join(_TMPDIR, "app.db")
+        if os.path.exists(self.path):
+            os.remove(self.path)
+
+    def columns(self):
+        connection = auth.connect()
+        try:
+            return {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(users)").fetchall()
+            }
+        finally:
+            connection.close()
+
+    def test_creates_the_full_schema_on_a_fresh_database(self):
+        auth.init_db()
+        self.assertTrue(
+            {"last_message_at", "last_latitude", "last_longitude", "last_location_at"}
+            <= self.columns()
+        )
+
+    def test_adds_columns_to_an_existing_legacy_table(self):
+        # the original schema, exactly as it shipped
+        connection = auth.connect()
+        connection.execute(
+            """
+            CREATE TABLE users (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                first_name    TEXT NOT NULL,
+                last_name     TEXT NOT NULL,
+                email         TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at    TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO users (first_name, last_name, email, password_hash, created_at)"
+            " VALUES ('A', 'B', 'a@example.com', 'x', '2026-01-01T00:00:00Z')"
+        )
+        connection.commit()
+        connection.close()
+        self.assertNotIn("last_message_at", self.columns())
+
+        auth.init_db()
+
+        self.assertTrue(
+            {"last_message_at", "last_latitude", "last_longitude", "last_location_at"}
+            <= self.columns()
+        )
+        # the pre-existing row survives and the new columns are null
+        connection = auth.connect()
+        try:
+            row = connection.execute("SELECT * FROM users").fetchone()
+            self.assertEqual(row["email"], "a@example.com")
+            self.assertIsNone(row["last_message_at"])
+        finally:
+            connection.close()
+
+    def test_is_idempotent(self):
+        auth.init_db()
+        auth.init_db()
+        auth.init_db()
+        self.assertIn("last_message_at", self.columns())
+
+
 class TestPages(AuthTestCase):
     def test_login_page_renders(self):
         response = self.http.get("/login")

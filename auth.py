@@ -110,6 +110,33 @@ def close_db(_exc: Optional[BaseException] = None) -> None:
         connection.close()
 
 
+#: Columns added to ``users`` after the original schema shipped. SQLite has no
+#: migration framework here, and ``CREATE TABLE IF NOT EXISTS`` leaves an
+#: existing database untouched, so :func:`_ensure_columns` adds these by hand.
+#: They stay nullable: ``ALTER TABLE ... ADD COLUMN`` cannot add a ``NOT NULL``
+#: column without a default, and existing rows have no value for them.
+ADDED_USER_COLUMNS = (
+    ("last_message_at", "TEXT"),
+    ("last_latitude", "REAL"),
+    ("last_longitude", "REAL"),
+    ("last_location_at", "TEXT"),
+)
+
+
+def _ensure_columns(connection: sqlite3.Connection, table: str, columns: Any) -> None:
+    """Add any of ``columns`` missing from ``table`` (idempotent).
+
+    ``columns`` is an iterable of ``(name, sqlite_type)`` pairs. Existing
+    columns are left alone, so this is safe to run on every startup.
+    """
+    existing = {
+        row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    for name, sql_type in columns:
+        if name not in existing:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+
+
 def init_db() -> None:
     """Create the schema if it does not exist yet (idempotent)."""
     connection = connect()
@@ -128,6 +155,8 @@ def init_db() -> None:
         )
         # emails are stored lowercased, so this makes uniqueness case-insensitive
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+        # upgrade databases created before these columns existed
+        _ensure_columns(connection, "users", ADDED_USER_COLUMNS)
         connection.commit()
     finally:
         connection.close()
@@ -169,6 +198,41 @@ def get_user_by_id(user_id: Any) -> Optional[Dict[str, Any]]:
     connection = get_db()
     row = connection.execute("SELECT * FROM users WHERE id = ?", (key,)).fetchone()
     return _row_to_user(row) if row else None
+
+
+# --- activity tracking ----------------------------------------------------
+
+
+def touch_last_message(user_id: Any) -> None:
+    """Record that ``user_id`` just had a chat turn accepted.
+
+    Best-effort: activity tracking must never fail the request it annotates.
+    """
+    try:
+        key = int(user_id)
+    except (TypeError, ValueError):
+        return
+    connection = get_db()
+    connection.execute(
+        "UPDATE users SET last_message_at = ? WHERE id = ?",
+        (iso(datetime.now(timezone.utc)), key),
+    )
+    connection.commit()
+
+
+def record_location(user_id: Any, latitude: float, longitude: float) -> None:
+    """Store the caller's latest position, overwriting the previous one."""
+    key = int(user_id)
+    connection = get_db()
+    connection.execute(
+        """
+        UPDATE users
+           SET last_latitude = ?, last_longitude = ?, last_location_at = ?
+         WHERE id = ?
+        """,
+        (latitude, longitude, iso(datetime.now(timezone.utc)), key),
+    )
+    connection.commit()
 
 
 # --- validation -----------------------------------------------------------

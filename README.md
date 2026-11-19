@@ -129,8 +129,17 @@ Logging in returns a **JWT** (HS256, 7 days) that the browser keeps in
 | `PATCH` | `/api/auth/profile` | `first_name, last_name, email, current_password`* | `200 {token, expires_at, user}` |
 | `POST` | `/api/auth/password` | `current_password, new_password, confirm_password` | `204` |
 | `POST` | `/api/auth/logout` | – | `204` |
+| `POST` | `/api/location` | `latitude, longitude` | `204` |
 
 \* `current_password` is required only when the email address actually changes.
+
+`POST /api/location` stores the caller's **latest** position only: it overwrites
+`last_latitude` / `last_longitude` / `last_location_at` on that account's row,
+so no location history accumulates. Both values must be finite numbers inside
+`[-90, 90]` and `[-180, 180]`; anything else is `400 invalid_request`. The
+`/chat` and `/call` pages send a ping every 5 seconds while they are visible.
+Coordinates are personal data: they are never logged, never returned by
+`/api/auth/me`, and never stored in chat history.
 
 Errors: `400 invalid_request`, `400 password_mismatch`, `409 email_taken`,
 `401 invalid_credentials` (one generic message for a wrong email *or* password —
@@ -156,6 +165,10 @@ endpoints). API paths get a `401` JSON; page paths get redirected to `/login`.
 Chat history stays in the browser, keyed per account
 (`th_chat_history_<user id>`), so two accounts on one browser don't share a
 thread.
+
+Each accepted chat turn stamps `users.last_message_at` with an ISO-8601 UTC
+timestamp, in both `/api/chat` and `/api/chat/stream` and in both chat and call
+mode. It is internal bookkeeping: the value is not exposed by `/api/auth/me`.
 
 The browser never sees the Token Harbor API key; all model calls go through
 Flask. The server prepends the system prompt so the message sent to the model
@@ -272,9 +285,19 @@ For example, “My sister Sara is 20” can be saved as:
 - `Current User` is a per-user self entity. The model never receives a user id;
   handlers are bound to the authenticated account, and every query is scoped by
   `user_id`.
-- Facts are append-only. Pass `"replace": true` on a fact to set `valid_until`
-  on older values for the same entity and predicate. `recall_memory` hides
-  expired facts unless `include_expired` is true.
+- Facts are append-only. An older value is retired by setting `valid_until`
+  rather than deleted, so `include_expired: true` still returns it.
+  `recall_memory` hides expired facts unless `include_expired` is true.
+- **Single-valued predicates supersede automatically.** Saving a new `name`,
+  `birthday`, `age`, `email`, `address`, `nickname`, and similar attributes
+  retires the previous value without needing `replace`, so saying “my name is
+  George” and then “my name is Yousef” leaves one active name. The set lives in
+  `SINGLE_VALUED_PREDICATES` in `memory.py`. Multi-valued predicates such as
+  `likes`, `hobby`, or `pet` keep every value unless you pass `replace: true`.
+  Re-saving an identical value does not create a second row.
+- The speaker's own name is the `name` fact on `Current User`, never an entity
+  named after them. `save_memory` does not change the account name that
+  `get_name` returns; that comes from `users` and is edited on `/settings`.
 - `value` can be any JSON scalar, array, or object.
 - Every returned entity, relationship, and fact includes its `created_at`.
   Facts also include `observed_at` and `valid_until`.

@@ -155,6 +155,7 @@ class TestPages(AppTestCase):
         self.assertIn(b'id="composer"', response.data)
         self.assertIn(b"chat.js", response.data)
         self.assertIn(b"session.js", response.data)
+        self.assertIn(b"location.js", response.data)
         self.assertIn(b'href="/call"', response.data)
 
     def test_chat_page_has_language_toggle(self):
@@ -168,6 +169,7 @@ class TestPages(AppTestCase):
         self.assertIn(b'id="call-stage"', response.data)
         self.assertIn(b"call.js", response.data)
         self.assertIn(b"session.js", response.data)
+        self.assertIn(b"location.js", response.data)
         self.assertIn(b"call.css", response.data)
 
     def test_pages_have_theme_support(self):
@@ -825,6 +827,141 @@ class TestVoiceApi(AppTestCase):
         )
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.get_json()["error"]["code"], "voice_token_expired")
+
+
+class TestLocationApi(AppTestCase):
+    """POST /api/location stores the caller's latest position only."""
+
+    def user_row(self, email=None):
+        connection = auth.connect()
+        try:
+            if email:
+                row = connection.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT * FROM users ORDER BY id LIMIT 1"
+                ).fetchone()
+            return dict(row) if row else None
+        finally:
+            connection.close()
+
+    def post_location(self, body, headers=None):
+        return self.http.post(
+            "/api/location", json=body, headers=self.headers if headers is None else headers
+        )
+
+    def test_requires_auth(self):
+        response = self.http.post("/api/location", json={"latitude": 1, "longitude": 2})
+        self.assertEqual(response.status_code, 401)
+
+    def test_stores_the_latest_position(self):
+        response = self.post_location({"latitude": 30.0444, "longitude": 31.2357})
+        self.assertEqual(response.status_code, 204)
+        row = self.user_row()
+        self.assertAlmostEqual(row["last_latitude"], 30.0444)
+        self.assertAlmostEqual(row["last_longitude"], 31.2357)
+        self.assertIsNotNone(row["last_location_at"])
+
+    def test_overwrites_the_previous_position(self):
+        self.post_location({"latitude": 10.0, "longitude": 20.0})
+        self.post_location({"latitude": 30.0, "longitude": 40.0})
+        row = self.user_row()
+        self.assertAlmostEqual(row["last_latitude"], 30.0)
+        self.assertAlmostEqual(row["last_longitude"], 40.0)
+
+    def test_does_not_touch_another_users_row(self):
+        self.post_location({"latitude": 1.5, "longitude": 2.5})
+
+        other = dict(CREDENTIALS)
+        other["email"] = "other@example.com"
+        token = self.http.post("/api/auth/register", json=other).get_json()["token"]
+        self.http.post(
+            "/api/location",
+            json={"latitude": 60.0, "longitude": 70.0},
+            headers={"Authorization": "Bearer " + token},
+        )
+
+        self.assertAlmostEqual(self.user_row()["last_latitude"], 1.5)
+        self.assertAlmostEqual(self.user_row("other@example.com")["last_latitude"], 60.0)
+
+    def test_accepts_the_coordinate_bounds(self):
+        for latitude, longitude in ((90, 180), (-90, -180), (0, 0)):
+            with self.subTest(latitude=latitude, longitude=longitude):
+                response = self.post_location(
+                    {"latitude": latitude, "longitude": longitude}
+                )
+                self.assertEqual(response.status_code, 204)
+
+    def test_rejects_invalid_coordinates(self):
+        cases = {
+            "missing": {},
+            "null": {"latitude": None, "longitude": None},
+            "text": {"latitude": "30", "longitude": "31"},
+            "bool": {"latitude": True, "longitude": False},
+            "latitude_out_of_range": {"latitude": 90.1, "longitude": 0},
+            "longitude_out_of_range": {"latitude": 0, "longitude": 180.1},
+            "nan": {"latitude": float("nan"), "longitude": 0},
+            "inf": {"latitude": 0, "longitude": float("inf")},
+        }
+        for name, body in cases.items():
+            with self.subTest(case=name):
+                response = self.post_location(body)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.get_json()["error"]["code"], "invalid_request")
+
+    def test_invalid_input_does_not_write(self):
+        self.post_location({"latitude": 999, "longitude": 0})
+        self.assertIsNone(self.user_row()["last_latitude"])
+
+    def test_coordinates_are_not_exposed_by_the_api(self):
+        self.post_location({"latitude": 30.0444, "longitude": 31.2357})
+        body = json.dumps(self.http.get("/api/auth/me", headers=self.headers).get_json())
+        self.assertNotIn("30.0444", body)
+        self.assertNotIn("last_latitude", body)
+
+
+class TestLastMessageAt(AppTestCase):
+    """The users.last_message_at column tracks accepted chat turns."""
+
+    def user_row(self):
+        connection = auth.connect()
+        try:
+            row = connection.execute("SELECT * FROM users ORDER BY id LIMIT 1").fetchone()
+            return dict(row) if row else None
+        finally:
+            connection.close()
+
+    def test_starts_empty(self):
+        self.assertIsNone(self.user_row()["last_message_at"])
+
+    def test_non_streaming_chat_updates_it(self):
+        self.use_client(FakeClient(reply="hi"))
+        response = self.http.post(
+            "/api/chat", json={"messages": [{"role": "user", "content": "hello"}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(self.user_row()["last_message_at"])
+
+    def test_streaming_chat_updates_it(self):
+        self.use_client(
+            FakeClient(events=[{"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []}])
+        )
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        response.get_data()
+        self.assertIsNotNone(self.user_row()["last_message_at"])
+
+    def test_rejected_request_does_not_update_it(self):
+        self.http.post(
+            "/api/chat", json={"messages": [{"role": "system", "content": "x"}]},
+            headers=self.headers,
+        )
+        self.assertIsNone(self.user_row()["last_message_at"])
 
 
 if __name__ == "__main__":

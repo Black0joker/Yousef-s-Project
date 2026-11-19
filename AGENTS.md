@@ -10,11 +10,11 @@ behavior changes. This file covers workflow and non-obvious wiring.
   history), re-exported by `core/__init__.py`. It must not import Flask.
 - `app.py` — Flask routes, request validation, system-prompt assembly, SSE.
   Uses one lazily created shared client via `get_client()`.
-- `auth.py` — SQLite users, scrypt password hashes, JWTs, profile/password
+- `auth.py` — SQLite users, Werkzeug scrypt hashes, JWTs, profile/password
   updates, and the `before_request` auth middleware registered by
   `init_app(app)`.
 - `memory.py` — personal-memory schema, entity/relationship/fact CRUD, and the
-  `save_memory` / `recall_memory` agent tool schemas and handlers.
+  `save_memory` / `recall_memory` / `get_name` tool schemas and handlers.
 - `voice.py` — ElevenLabs web-request client for call mode: session token
   expiry, payload/chunking, MP3 synthesis, and redacted logging.
 - `logging_config.py` — readable text logging by default, JSON option, request
@@ -38,12 +38,19 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 
 - There is no pytest, lint, typecheck, formatter, or CI config. Stdlib
   `unittest` is the only verification step.
-- `discover -s tests` does not recurse into `tests/integration` (no
-  `__init__.py`); that suite runs separately and skips without a key.
+- `discover -s tests` does not recurse into `tests/integration`: neither `tests/`
+  nor `tests/integration/` has an `__init__.py` (dotted single-test paths still
+  work via namespace packages). The live suite runs separately and skips without
+  a key.
 - Live tests use `TH_TEST_MODEL` (default `deepseek-v4.1-flash:free`). On
   PowerShell: `$env:TH_TEST_MODEL = "qwen3.7-max"` before the command.
+- Route tests stub the provider with
+  `patch.object(app_module, "get_client", lambda: FakeClient())`
+  (`FakeClient` lives in `tests/test_app.py`); never call the real gateway.
 
 ## Gotchas
+
+### Startup, config, tests
 
 - Importing `app.py` immediately configures logging, then runs `auth.init_db()`
   and `memory.init_db()`. Tests set `TH_DB_PATH`, `JWT_SECRET`, `LOG_LEVEL`, and
@@ -53,9 +60,24 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   into tests. `test_app.py` deliberately clears `TH_SYSTEM_PROMPT` so tests
   exercise `prompts/*.md`.
 - No migration framework: `auth.init_db()` / `memory.init_db()` only do
-  `CREATE TABLE IF NOT EXISTS`. Schema changes need explicit handling for
-  existing databases. Memory tables are added automatically to an existing
-  `instance/app.db`.
+  `CREATE TABLE IF NOT EXISTS`. **A new column on an existing table needs an
+  explicit `ALTER TABLE`**, or every database already on disk silently misses it
+  — `CREATE TABLE IF NOT EXISTS` does nothing to a table that exists.
+  `auth.ADDED_USER_COLUMNS` + `_ensure_columns()` (PRAGMA `table_info` then
+  `ALTER TABLE ... ADD COLUMN`) is the pattern; keep those columns nullable,
+  because `ADD COLUMN` cannot add `NOT NULL` without a default. Memory tables are
+  added automatically to an existing `instance/app.db`; user columns are not.
+- `users` carries `last_message_at` (stamped by `auth.touch_last_message()` in
+  both chat routes) and `last_latitude` / `last_longitude` / `last_location_at`
+  (overwritten by `POST /api/location`). They are internal: `_row_to_user()` and
+  `public_user()` deliberately omit them, so `/api/auth/me` and the JWT claims
+  never leak coordinates. Coordinates are personal data — never log them, not
+  even in an error path; `location.update` logs only user/outcome/duration.
+- Default models differ: `app.py` uses `deepseek-v4.1-flash:free` (no balance
+  needed), while `core` defaults to `deepseek-v4.1-flash`. Both honor `TH_MODEL`.
+
+### Memory
+
 - Memory tools are always scoped by the JWT user id. Never add a `user_id`
   parameter to a tool schema: handlers from `memory.toolset()` bind it, and
   `auth.connect()` enables SQLite foreign keys for cascade deletes.
@@ -73,6 +95,16 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - Memory query results always include `created_at` for every entity,
   relationship, and fact; facts also include `observed_at` and `valid_until`.
   Keep those date fields when changing the row serializers.
+- Facts are never updated in place: a superseded value keeps its row and gets
+  `valid_until`. `SINGLE_VALUED_PREDICATES` (name, birthday, age, email, …) in
+  `memory.py` supersedes implicitly so a corrected name does not leave two
+  active facts; everything else needs `replace: true`. Do not add multi-valued
+  predicates (`likes`, `hobby`, `pet`) to that set — it would silently discard
+  real data. Identical re-saves are a no-op, checked *before* the expire step so
+  an unchanged value keeps its original row.
+
+### Logging
+
 - Route every memory SQL statement through `_execute(...)`: it emits
   `memory.sql` with normalized statement text, operation, and duration. Log SQL
   with `?` placeholders only; never add bind values. `LOG_SQL=0` disables it.
@@ -95,45 +127,9 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - `logging_config.init_request_logging(app)` must be registered before
   `auth.init_app(app)` so requests rejected by auth still produce request logs.
   `LOG_FILE=""` disables the rotating file; default is `instance/app.log`.
-- `voice.py` replays the elevenlabs.io web request with a Firebase access token;
-  there is no `xi-api-key` path. Prefer `ELEVENLABS_REFRESH_TOKEN` (long-lived)
-  and let `_access_token()` mint/cache one-hour tokens through
-  `securetoken.googleapis.com`; `ELEVENLABS_TOKEN` is a short-lived fallback.
-  The refresh call must send `Origin`/`Referer: https://elevenlabs.io/` or the
-  referrer-restricted Firebase key answers `403`.
-- A rotated `refresh_token` from the refresh response must be written back to
-  `.env` via `_persist_refresh_token()` (atomic replace, value never logged) and
-  into `os.environ`. `/api/voice/status` reports availability/expiry and
-  `refresh_configured` without exposing any token; `/call` shows the banner when
-  voice is down and callers can still type. A provider `401` for
-  `detected_unusual_activity` maps to `voice_account_restricted`, not
-  `voice_token_expired`.
-- A refreshed token can be valid (`/v1/user/subscription` returns 200) while
-  text-to-dialogue still returns `detected_unusual_activity`; that is an
-  ElevenLabs account restriction, not a refresh failure. Compare Firebase
-  `firebase.sign_in_provider` between the working browser token and the refresh
-  token: capture the refresh token from the same provider (for example sign in
-  with Google before copying `stsTokenManager.refreshToken`).
-- Voice routes are authenticated (`GET /api/voice/status`,
-  `POST /api/voice/speak`); only `/call` is a public shell. Never log voice
-  text, tokens, voice ids, or audio. `voice.speak` logs only `text_chars`,
-  `chunks`, `duration_ms`, and `outcome`.
-- The call client streams through the existing `/api/chat/stream` with
-  `mode: "call"` and synthesises whole text segments, never sentences. A
-  `tool_start` frame flushes the pre-tool text so it plays while the tool runs;
-  the text after the last tool call is flushed when the reply completes. Tool
-  status frames are not spoken. Hang-up must abort the stream, stop recognition
-  and audio, and call `/api/chat/stop` with the `X-Stream-ID`.
-- Release the SSE `ReadableStreamDefaultReader` and defer the final tail
-  segment by a tick after the stream ends. Firing it in the stream's completion
-  microtask can reuse the closing HTTP connection and hang until the 30s fetch
-  timeout. Tool-boundary segments are sent during the stream, so they are not
-  affected by this deferral.
-- `static/call.js` unlocks playback with a silent clip inside the Start-call
-  gesture and calls `pauseRecognition()` while audio plays. Without that, the
-  microphone hears SAGE's own voice, the barge-in handler stops playback, and
-  the user sees text with no sound. `/chat` must link to `/call` (the voice UI
-  only exists there).
+
+### Auth
+
 - All routes are guarded by the auth middleware except `PUBLIC_PATHS` and
   `PUBLIC_PREFIXES` in `auth.py`. Add new public routes there; API paths get a
   JSON 401, page paths redirect to `/login`.
@@ -147,6 +143,9 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   never log names, emails, or passwords to compensate.
 - The client may only send `user`/`assistant` messages; `system` is rejected.
   The server always inserts the system prompt at index 0 in `build_payload()`.
+
+### Prompts and modes
+
 - Adding a language requires coordinated edits to `LANGUAGE_FILES`,
   `LANGUAGE_ALIASES`, and `LANGUAGE_DIRECTIVES` in `app.py`, plus `STRINGS` and
   `LANG_ALIASES` in `static/chat.js`. `TH_SYSTEM_PROMPT` overrides all languages.
@@ -171,13 +170,56 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   schema, the brief text, and the drift test in `tests/test_memory.py` together.
   The brief is not a security boundary: `user_id` stays out of every tool schema
   and is bound by `memory.toolset()`.
-- Default models differ: `app.py` uses `deepseek-v4.1-flash:free` (no balance
-  needed), while `core` defaults to `deepseek-v4.1-flash`. Both honor `TH_MODEL`.
+
+### Voice
+
+- `voice.py` replays the elevenlabs.io web request with a Firebase access token;
+  there is no `xi-api-key` path. Prefer `ELEVENLABS_REFRESH_TOKEN` (long-lived)
+  and let `_access_token()` mint/cache one-hour tokens through
+  `securetoken.googleapis.com`; `ELEVENLABS_TOKEN` is a short-lived fallback.
+  The refresh call must send `Origin`/`Referer: https://elevenlabs.io/` or the
+  referrer-restricted Firebase key answers `403`.
+- A rotated `refresh_token` from the refresh response must be written back to
+  `.env` via `_persist_refresh_token()` (atomic replace, value never logged) and
+  into `os.environ`. `/api/voice/status` reports availability/expiry and
+  `refresh_configured` without exposing any token; `/call` shows the banner when
+  voice is down and callers can still type.
+- A provider `401` for `detected_unusual_activity` maps to
+  `voice_account_restricted`, not `voice_token_expired`. A refreshed token can
+  be valid (`/v1/user/subscription` returns 200) while text-to-dialogue still
+  returns that error: it is an account restriction, so compare Firebase
+  `sign_in_provider` between the working browser token and the refresh token
+  (capture the refresh token from the same provider). README has the diagnosis.
+- Voice routes are authenticated (`GET /api/voice/status`,
+  `POST /api/voice/speak`); only `/call` is a public shell. Never log voice
+  text, tokens, voice ids, or audio. `voice.speak` logs only `text_chars`,
+  `chunks`, `duration_ms`, and `outcome`. Segments over the provider's
+  2,000-character limit are split server-side with continuity metadata (the
+  client never sends many prompts); `synthesize` rejects text over 4,000 chars.
+- The call client streams through the existing `/api/chat/stream` with
+  `mode: "call"` and synthesises whole text segments, never sentences. A
+  `tool_start` frame flushes the pre-tool text so it plays while the tool runs;
+  the text after the last tool call is flushed when the reply completes. Tool
+  status frames are not spoken. Hang-up must abort the stream, stop recognition
+  and audio, and call `/api/chat/stop` with the `X-Stream-ID`.
+- Release the SSE `ReadableStreamDefaultReader` and defer the final tail
+  segment by a tick after the stream ends. Firing it in the stream's completion
+  microtask can reuse the closing HTTP connection and hang until the 30s fetch
+  timeout. Tool-boundary segments are sent during the stream, so they are not
+  affected by this deferral.
+- `static/call.js` unlocks playback with a silent clip inside the Start-call
+  gesture and calls `pauseRecognition()` while audio plays. Without that, the
+  microphone hears SAGE's own voice, the barge-in handler stops playback, and
+  the user sees text with no sound. `/chat` must link to `/call` (the voice UI
+  only exists there).
+
+### Streaming and UI
+
 - SSE clients expect `{"delta"}` / `{"reasoning"}` frames, transient
   `{"tool": {"name": ..., "status": "start"|"end", "ok": ...}}` frames, a final
-  `{"done": ...}` frame, and the literal `data: [DONE]` terminator.
-  `TokenHarbor.run_tools_events()` emits the tool lifecycle; the app forwards
-  names/status only, never tool arguments or results.
+  `{"done": ...}` frame, an optional `{"stopped": true}` frame, and the literal
+  `data: [DONE]` terminator. `TokenHarbor.run_tools_events()` emits the tool
+  lifecycle; the app forwards names/status only, never tool arguments or results.
 - Stopping is id-based: the stream response carries `X-Stream-ID`, and
   `POST /api/chat/stop {"id": ...}` sets that entry's `threading.Event` and calls
   the stored provider `response.close`. `_ACTIVE_STREAMS` in `app.py` is
@@ -196,7 +238,14 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   `th_chat_history_*`; clear them when answer text starts or an error occurs,
   and let the brief completion label expire on its own.
 - Frontend API calls must use `Session.authFetch` from `static/session.js`; plain
-  `fetch` skips the Bearer header and the 401 redirect.
-- Browser state keys: `th_token`, `th_expires_at`, `th_user`, `th_language`, and
-  per-account `th_chat_history_<user id>`.
+  `fetch` skips the Bearer header and the 401 redirect. The one exception is
+  `static/auth.js`, whose login/register POSTs run before a token exists and
+  must not redirect on 401.
+- Browser state keys: `th_token`, `th_expires_at`, `th_user`, `th_theme`,
+  `th_language`, and per-account `th_chat_history_<user id>`.
+- `static/location.js` is loaded by `/chat` and `/call` only, after
+  `session.js`. It pings `/api/location` every 5s, skips a tick while a request
+  is in flight, pauses on `visibilitychange`, and stops permanently on
+  `PERMISSION_DENIED`. Geolocation needs a secure context: `127.0.0.1` /
+  `localhost` work, a plain-HTTP LAN IP does not.
 - `static/welcome.js` is unreferenced leftover code; `/` redirects to `/login`.

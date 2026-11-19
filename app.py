@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -387,6 +388,25 @@ def sse(payload: Dict[str, Any]) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
+# --- location -------------------------------------------------------------
+
+
+def clean_coordinate(value: Any, limit: float) -> float:
+    """Validate one latitude/longitude value from the client.
+
+    ``bool`` is rejected because it subclasses ``int``, and ``NaN``/``inf`` are
+    rejected because they pass naive range comparisons.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Latitude and longitude must be numbers.")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("Latitude and longitude must be finite numbers.")
+    if not -limit <= number <= limit:
+        raise ValueError(f"Coordinate must be between -{limit:g} and {limit:g}.")
+    return number
+
+
 # --- pages ----------------------------------------------------------------
 
 
@@ -518,6 +538,8 @@ def api_chat():
     except ValueError as exc:
         return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
 
+    auth.touch_last_message((auth.current_user() or {}).get("id"))
+
     try:
         client = get_client()
     except TokenHarborError as exc:
@@ -580,6 +602,8 @@ def api_chat_stream():
         payload = build_payload(data.get("messages"), language, mode, greeting)
     except ValueError as exc:
         return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
+
+    auth.touch_last_message((auth.current_user() or {}).get("id"))
 
     try:
         client = get_client()
@@ -841,6 +865,53 @@ def api_voice_speak():
         },
     )
     return Response(audio, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
+# --- location API ---------------------------------------------------------
+
+
+@app.post("/api/location")
+def api_location():
+    """Store the caller's latest position; overwritten on every ping.
+
+    Coordinates are personal data: they are written to the caller's own row and
+    never logged, returned, or stored in chat history.
+    """
+    claims = auth.current_user() or {}
+    data = request.get_json(silent=True) or {}
+    started = time.perf_counter()
+    try:
+        latitude = clean_coordinate(data.get("latitude"), 90.0)
+        longitude = clean_coordinate(data.get("longitude"), 180.0)
+    except ValueError as exc:
+        logger.warning(
+            "location.invalid",
+            extra={
+                "event": "location.invalid",
+                "user_id": claims.get("id"),
+                "outcome": "error",
+            },
+        )
+        return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
+
+    try:
+        auth.record_location(claims.get("id"), latitude, longitude)
+    except (TypeError, ValueError):
+        return (
+            jsonify({"error": {"code": "unauthorized", "message": "Authentication required."}}),
+            401,
+        )
+
+    logger.info(
+        "location.update",
+        extra={
+            "event": "location.update",
+            "user_id": claims.get("id"),
+            "duration_ms": elapsed_ms(started),
+            "outcome": "ok",
+        },
+    )
+    return "", 204
 
 
 if __name__ == "__main__":

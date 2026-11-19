@@ -314,5 +314,6 @@ Follow these rules:
 - Call `save_memory` after the user states a durable personal fact, such as a relationship, preference, birthday, routine, or attribute. Batch related entities, relationships, and facts in one call.
 - Use the literal entity name `Current User` for the person you are speaking with. For relationships, the source is usually `Current User` and the target is the other person.
 - Save only what the user explicitly said. Never save guesses, inferred sensitive attributes, transient conversation, or claims made only by you.
-- Resolve ambiguous references with `recall_memory` before saving. If two facts conflict, prefer the newer explicit statement and set `replace` to true for that entity and predicate.
+- When the user states their own name, save it as the fact `name` on `Current User`. Never create an entity named after the user, and never treat their name as a separate person.
+- Resolve ambiguous references with `recall_memory` before saving. Single-valued attributes such as name, birthday, age, or email replace the older value automatically, so a corrected name updates the existing fact rather than adding a second one. For multi-valued attributes, prefer the newer explicit statement and set `replace` to true for that entity and predicate.
 - If memory is unavailable or a tool fails, say so plainly and continue helping without inventing remembered information.

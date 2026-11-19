@@ -53,6 +53,33 @@ SELF_ENTITY_NAME = "Current User"
 SELF_ENTITY_TYPE = "Person"
 SELF_ALIASES = frozenset({"current user", "me", "i", "myself", "self", "أنا", "المستخدم الحالي"})
 
+#: Predicates that hold at most one current value per entity. A person has one
+#: name, one birthday, one age at a time, so a newer statement supersedes the
+#: older one automatically instead of leaving two active facts behind.
+#: Multi-valued predicates (likes, hobbies, pets, phone numbers, languages) are
+#: deliberately absent: superseding them would silently destroy real data, so
+#: those still need an explicit ``replace``.
+SINGLE_VALUED_PREDICATES = frozenset(
+    {
+        "name",
+        "full_name",
+        "first_name",
+        "last_name",
+        "nickname",
+        "birthday",
+        "date_of_birth",
+        "age",
+        "gender",
+        "email",
+        "address",
+        "nationality",
+    }
+)
+
+
+def _is_single_valued(predicate: str) -> bool:
+    return predicate.strip().lower().replace(" ", "_") in SINGLE_VALUED_PREDICATES
+
 
 class MemoryError(ValueError):
     """Validation or lookup failure that is safe to report to the model."""
@@ -591,7 +618,29 @@ def _save_memory(
                 observed_at = _timestamp(item.get("observed_at"), "observed_at") or now
                 valid_until = _timestamp(item.get("valid_until"), "valid_until")
 
-                if _flag(item.get("replace"), "replace"):
+                # Re-saving the same value is a no-op, not a second active row.
+                # Checked before the supersede step, so an identical value keeps
+                # its original row instead of churning valid_until.
+                duplicate = _execute(
+                    db,
+                    """
+                    SELECT f.*, e.name AS entity_name, e.entity_type AS entity_type
+                    FROM memory_facts f JOIN entities e ON e.id = f.entity_id
+                    WHERE f.user_id = ? AND e.user_id = ? AND f.entity_id = ?
+                      AND f.predicate = ? COLLATE NOCASE AND f.value = ?
+                      AND (f.valid_until IS NULL OR f.valid_until > ?)
+                    ORDER BY f.created_at DESC LIMIT 1
+                    """,
+                    (key, key, entity["id"], predicate, value, now),
+                    operation="fact.find",
+                ).fetchone()
+                if duplicate is not None:
+                    saved_facts.append(_fact_dict(duplicate))
+                    continue
+
+                # Single-valued predicates supersede automatically, so the
+                # model does not have to remember `replace` to keep one name.
+                if _flag(item.get("replace"), "replace") or _is_single_valued(predicate):
                     _execute(
                         db,
                         """
@@ -923,8 +972,10 @@ SAVE_MEMORY_SCHEMA: Dict[str, Any] = {
             "relationships, preferences, dates, routines, and attributes. Use the literal "
             "entity name 'Current User' for the speaker. Batch related entities, "
             "relationships, and facts in one call. Do not save guesses, transient chat, "
-            "or information the user did not state. Set replace=true when a new fact "
-            "supersedes an older value for the same entity and predicate."
+            "or information the user did not state. Single-valued attributes such as name, "
+            "birthday, age, or email replace the older value automatically, so saving a new "
+            "name updates it instead of adding a second one. Set replace=true for "
+            "multi-valued attributes when a new fact supersedes an older one."
         ),
         "parameters": {
             "type": "object",
@@ -1099,7 +1150,11 @@ Three stores, all scoped to the signed-in user:
 - `relationships` — one directed edge from source to target with a label. Keys: `source_entity`, `target_entity`, `relationship_type` (max {MAX_RELATIONSHIP_TYPE}).
 - `memory_facts` — an entity plus a predicate mapped to a JSON value. Keys: `entity`, `predicate` (max {MAX_PREDICATE}), `value` (any JSON value, up to {MAX_VALUE_BYTES // 1000} KB), `confidence`, `source`, `observed_at`, `valid_until`, `replace`.
 
-Facts are append-only: send the new fact with `replace: true` to supersede an older value for the same entity and predicate. Expired facts stay hidden unless `include_expired` is true.
+Facts are append-only: an older value is retired by setting its `valid_until` rather than deleted, so `include_expired: true` still shows it. Expired facts stay hidden unless `include_expired` is true.
+
+Single-valued predicates supersede automatically — saving a new `name`, `birthday`, `age`, `email`, `address`, or `nickname` for an entity retires the previous value, so `replace` is not needed for them. Multi-valued predicates such as `likes`, `hobby`, or `pet` keep every value unless you pass `replace: true`. Saving an identical value twice does not create a second row.
+
+The speaker's own name is the `name` fact on `Current User`, not a new entity. Never create an entity named after the user; `save_memory` does not change the account name that `get_name` returns.
 
 Server-managed — never send these and never invent them: `id`, `user_id`, `created_at`, and the defaults for `source` and `observed_at`. The server binds the user from the signed-in session and ignores extra keys. There is no parameter for SQL, table names, or columns.
 
