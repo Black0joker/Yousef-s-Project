@@ -221,7 +221,10 @@ Config (all optional except the key):
 | `LOG_FILE` | `instance/app.log` | rotating log file; set to empty to disable |
 | `LOG_MAX_BYTES` | `5000000` | rotate the log file after this size |
 | `LOG_BACKUP_COUNT` | `5` | number of rotated log files to keep |
-| `ELEVENLABS_TOKEN` | — | browser session token for voice; expires about hourly |
+| `ELEVENLABS_REFRESH_TOKEN` | — | preferred: Firebase refresh token; mints access tokens |
+| `FIREBASE_API_KEY` | public web key | Firebase Web API key; referrer-restricted |
+| `ELEVENLABS_UID` | — | optional Firebase user id for reference |
+| `ELEVENLABS_TOKEN` | — | fallback: short-lived access token; expires hourly |
 | `ELEVENLABS_BASE_URL` | `https://api.us.elevenlabs.io` | regional ElevenLabs host |
 | `ELEVENLABS_VOICE_ID` | `owl` voice | default voice id for spoken replies |
 | `ELEVENLABS_VOICE_ID_AR` | — | optional Arabic voice id |
@@ -394,14 +397,26 @@ This follows the [ElevenApi](https://github.com/Black0joker/ElevenApi) approach:
 
 ### Getting a voice token
 
-1. Open <https://elevenlabs.io/app/speech-synthesis> and generate something.
-2. DevTools → Network → filter `stream` → open the `text-to-dialogue/stream`
-   request → Headers → Request Headers → copy `authorization: Bearer eyJ...`.
-3. Put it in `.env` as `ELEVENLABS_TOKEN=eyJ...`.
+The web app authenticates with Firebase, so the preferred setup is its
+long-lived refresh token; the server mints a fresh one-hour access token
+automatically whenever it is needed.
 
-The token expires after about an hour. `/api/voice/status` reports the expiry,
-and `/call` shows a banner when voice is unavailable; refresh the token to
-restore audio. Text chat and typed call turns keep working when voice is down.
+1. Open <https://elevenlabs.io/app> and sign in.
+2. DevTools → Application → Local Storage → `https://elevenlabs.io`.
+3. Open the `firebase:authUser:<FIREBASE_API_KEY>:[DEFAULT]` entry and copy
+   `stsTokenManager.refreshToken`.
+4. Put it in `.env` as `ELEVENLABS_REFRESH_TOKEN=...` (and optionally
+   `ELEVENLABS_UID=...`). The public `FIREBASE_API_KEY` has a default and only
+   needs overriding if ElevenLabs changes it.
+
+The server exchanges that refresh token at `securetoken.googleapis.com` and
+caches the access token in memory. If Firebase rotates the refresh token, the
+new value is written back to `.env` automatically. A short-lived
+`ELEVENLABS_TOKEN` copied from the `authorization` header still works as a
+fallback. `/api/voice/status` reports availability and expiry; `/call` shows a
+banner when voice is unavailable. Text chat and typed call turns keep working
+when voice is down. ElevenLabs may also restrict an account (for example after
+unusual-activity detection), which is reported as `voice_account_restricted`.
 
 The server sends only assistant text to ElevenLabs. Voice text, tokens, and
 audio are never logged and never stored in chat history. One turn produces at

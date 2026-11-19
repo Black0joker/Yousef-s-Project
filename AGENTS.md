@@ -95,10 +95,19 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - `logging_config.init_request_logging(app)` must be registered before
   `auth.init_app(app)` so requests rejected by auth still produce request logs.
   `LOG_FILE=""` disables the rotating file; default is `instance/app.log`.
-- `voice.py` replays the elevenlabs.io web request with a session token
-  (`ELEVENLABS_TOKEN`), so it expires about hourly and has no `xi-api-key` path.
-  `GET /api/voice/status` must keep reporting expiry without exposing the token;
-  `/call` shows the banner when voice is down and callers can still type.
+- `voice.py` replays the elevenlabs.io web request with a Firebase access token;
+  there is no `xi-api-key` path. Prefer `ELEVENLABS_REFRESH_TOKEN` (long-lived)
+  and let `_access_token()` mint/cache one-hour tokens through
+  `securetoken.googleapis.com`; `ELEVENLABS_TOKEN` is a short-lived fallback.
+  The refresh call must send `Origin`/`Referer: https://elevenlabs.io/` or the
+  referrer-restricted Firebase key answers `403`.
+- A rotated `refresh_token` from the refresh response must be written back to
+  `.env` via `_persist_refresh_token()` (atomic replace, value never logged) and
+  into `os.environ`. `/api/voice/status` reports availability/expiry and
+  `refresh_configured` without exposing any token; `/call` shows the banner when
+  voice is down and callers can still type. A provider `401` for
+  `detected_unusual_activity` maps to `voice_account_restricted`, not
+  `voice_token_expired`.
 - Voice routes are authenticated (`GET /api/voice/status`,
   `POST /api/voice/speak`); only `/call` is a public shell. Never log voice
   text, tokens, voice ids, or audio. `voice.speak` logs only `text_chars`,

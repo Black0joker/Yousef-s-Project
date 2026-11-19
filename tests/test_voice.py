@@ -9,6 +9,7 @@ import base64
 import json
 import os
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -29,10 +30,11 @@ def fake_jwt(payload: dict) -> str:
 
 
 class FakeResponse:
-    def __init__(self, status_code=200, chunks=(b"fake-mp3",), headers=None):
+    def __init__(self, status_code=200, chunks=(b"fake-mp3",), headers=None, json_body=None):
         self.status_code = status_code
         self.chunks = list(chunks)
         self.headers = headers or {}
+        self.json_body = json_body
         self.closed = False
 
     def iter_content(self, chunk_size):
@@ -42,11 +44,51 @@ class FakeResponse:
     def close(self):
         self.closed = True
 
+    def json(self):
+        if self.json_body is None:
+            raise ValueError("no JSON body")
+        return self.json_body
+
     def text(self):
         return ""
 
 
 class VoiceTestCase(unittest.TestCase):
+    def setUp(self):
+        # Never let the developer's real .env or cached token leak into a test.
+        self._env_dir = tempfile.mkdtemp(prefix="th_voice_env_")
+        self._env_path = os.path.join(self._env_dir, ".env")
+        env_patcher = patch.object(voice, "ENV_PATH", self._env_path)
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+
+        self._saved_env = {}
+        for name in (
+            "ELEVENLABS_TOKEN",
+            "ELEVENLABS_AUTHORIZATION",
+            "ELEVENLABS_REFRESH_TOKEN",
+            "ELEVENLABS_UID",
+            "FIREBASE_API_KEY",
+            "ELEVENLABS_VOICE_ID",
+            "ELEVENLABS_VOICE_ID_AR",
+            "ELEVENLABS_BASE_URL",
+        ):
+            self._saved_env[name] = os.environ.get(name)
+            os.environ.pop(name, None)
+
+        voice._cached_access_token = None
+        voice._cached_access_expiry = 0.0
+        self.addCleanup(self._restore_globals)
+
+    def _restore_globals(self):
+        for name, value in self._saved_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        voice._cached_access_token = None
+        voice._cached_access_expiry = 0.0
+
     def set_env(self, **values):
         old = {key: os.environ.get(key) for key in values}
         os.environ.update({key: value for key, value in values.items() if value is not None})
@@ -95,6 +137,86 @@ class TokenTests(VoiceTestCase):
         self.assertIn("owl", state["voices"])
 
 
+class RefreshTests(VoiceTestCase):
+    def _firebase_body(self, token: str, refresh: str = "refresh-token") -> dict:
+        return {
+            "access_token": token,
+            "id_token": token,
+            "expires_in": "3600",
+            "token_type": "Bearer",
+            "refresh_token": refresh,
+            "user_id": "uid-1",
+            "project_id": "265222077342",
+        }
+
+    def test_status_refreshes_an_expired_access_token(self):
+        expired = fake_jwt({"exp": int(time.time()) - 60})
+        fresh = fake_jwt({"exp": int(time.time()) + 3600})
+        self.set_env(
+            ELEVENLABS_TOKEN=expired,
+            ELEVENLABS_REFRESH_TOKEN="refresh-1",
+            FIREBASE_API_KEY="public-key",
+        )
+        firebase = FakeResponse(json_body=self._firebase_body(fresh, refresh="refresh-1"))
+        with patch.object(voice.requests, "post", return_value=firebase) as post:
+            state = voice.status()
+
+        self.assertTrue(state["available"])
+        self.assertTrue(state["refresh_configured"])
+        self.assertEqual(state["reason"], "refresh")
+        self.assertTrue(post.call_args.args[0].startswith("https://securetoken.googleapis.com/v1/token"))
+        self.assertEqual(post.call_args.kwargs["data"]["refresh_token"], "refresh-1")
+        self.assertEqual(post.call_args.kwargs["params"]["key"], "public-key")
+
+    def test_synthesis_uses_the_refreshed_token(self):
+        expired = fake_jwt({"exp": int(time.time()) - 60})
+        fresh = fake_jwt({"exp": int(time.time()) + 3600})
+        self.set_env(
+            ELEVENLABS_TOKEN=expired,
+            ELEVENLABS_REFRESH_TOKEN="refresh-1",
+            ELEVENLABS_BASE_URL="https://example.test",
+        )
+        firebase = FakeResponse(json_body=self._firebase_body(fresh, refresh="refresh-2"))
+        eleven = FakeResponse(chunks=[b"mp3-data"])
+        with patch.object(voice.requests, "post", side_effect=[firebase, eleven]) as post:
+            audio = voice.synthesize("Hello.")
+
+        self.assertEqual(audio, b"mp3-data")
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(post.call_args_list[1].kwargs["headers"]["authorization"], f"Bearer {fresh}")
+        # The rotated refresh token is written back to the (temporary) .env.
+        with open(self._env_path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("ELEVENLABS_REFRESH_TOKEN=refresh-2", text)
+
+    def test_rejected_refresh_token_is_reported(self):
+        self.set_env(ELEVENLABS_REFRESH_TOKEN="bad-refresh")
+        firebase = FakeResponse(status_code=400, json_body={"error": {"message": "INVALID_REFRESH_TOKEN"}})
+        with patch.object(voice.requests, "post", return_value=firebase) as post:
+            with self.assertRaises(voice.VoiceError) as ctx:
+                voice.synthesize("Hello.")
+
+        self.assertEqual(ctx.exception.code, "voice_token_expired")
+        self.assertEqual(post.call_count, 1)
+
+    def test_missing_credentials_report_missing(self):
+        with self.assertRaises(voice.VoiceError) as ctx:
+            voice.synthesize("Hello.")
+        self.assertEqual(ctx.exception.code, "voice_token_missing")
+
+    def test_persist_refresh_token_updates_env_file(self):
+        with open(self._env_path, "w", encoding="utf-8") as handle:
+            handle.write("TH_API_KEY=keep-me\nELEVENLABS_REFRESH_TOKEN=old-token\n")
+
+        voice._persist_refresh_token("new-token")
+
+        with open(self._env_path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("TH_API_KEY=keep-me", text)
+        self.assertIn("ELEVENLABS_REFRESH_TOKEN=new-token", text)
+        self.assertNotIn("old-token", text)
+
+
 class SynthesisTests(VoiceTestCase):
     def setUp(self):
         self.token = fake_jwt({"exp": int(time.time()) + 3600})
@@ -135,6 +257,21 @@ class SynthesisTests(VoiceTestCase):
                 voice.synthesize("Hello.")
         self.assertEqual(ctx.exception.code, "voice_token_expired")
         self.assertTrue(response.closed)
+
+    def test_restricted_account_is_reported_distinctly(self):
+        response = FakeResponse(
+            status_code=401,
+            json_body={
+                "detail": {
+                    "status": "detected_unusual_activity",
+                    "message": "Free Tier access has been disabled.",
+                }
+            },
+        )
+        with patch.object(voice.requests, "post", return_value=response):
+            with self.assertRaises(voice.VoiceError) as ctx:
+                voice.synthesize("Hello.")
+        self.assertEqual(ctx.exception.code, "voice_account_restricted")
 
     def test_long_text_is_split_with_continuity(self):
         long_text = "Sentence. " * 260  # > 2000 characters

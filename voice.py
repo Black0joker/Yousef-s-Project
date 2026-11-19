@@ -2,12 +2,14 @@
 
 This ports the request shape used by the ElevenApi project
 (https://github.com/Black0joker/ElevenApi): it replays the elevenlabs.io web
-request against ``POST /v1/text-to-dialogue/stream`` using a browser session
+request against ``POST /v1/text-to-dialogue/stream`` using a Firebase session
 token rather than an official ``xi-api-key``.
 
-The session token expires after about an hour and must be refreshed manually
-from the browser's DevTools network tab. ``status()`` reports when it dies so
-the UI can explain the failure. Never log the token or the text.
+The web app authenticates with Firebase, so a long-lived refresh token
+(``ELEVENLABS_REFRESH_TOKEN``) can mint a fresh one-hour access token through
+``securetoken.googleapis.com``. Refresh tokens may rotate; the new value is
+written back to ``.env``. ``ELEVENLABS_TOKEN`` remains as a manual fallback.
+Never log the access token, the refresh token, or the text.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -34,6 +37,20 @@ MAX_CHARS = 2_000
 MAX_TEXT_CHARS = 4_000
 REQUEST_TIMEOUT = 120.0
 ATTEMPTS = 3
+
+#: Firebase public Web API key from the elevenlabs.io web app. It is public by
+#: design; override with FIREBASE_API_KEY if the app changes it.
+DEFAULT_FIREBASE_API_KEY = "AIzaSyBSsRE_1Os04-bxpd5JTLIniy3UK4OqKys"
+FIREBASE_TOKEN_URL = "https://securetoken.googleapis.com/v1/token"
+ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+#: Mint a new access token a minute before the old one actually dies.
+REFRESH_SKEW_SECONDS = 60.0
+_FIREBASE_TIMEOUT = 30.0
+
+_TOKEN_LOCK = threading.Lock()
+_cached_access_token: Optional[str] = None
+_cached_access_expiry: float = 0.0
 
 #: Friendly names used by the call UI. Override the default with
 #: ELEVENLABS_VOICE_ID (and ELEVENLABS_VOICE_ID_AR for Arabic).
@@ -113,6 +130,7 @@ def prompt_brief() -> str:
 
 
 def _token() -> str:
+    """A manually supplied access token, if any."""
     raw = (
         os.environ.get("ELEVENLABS_TOKEN")
         or os.environ.get("ELEVENLABS_AUTHORIZATION")
@@ -121,6 +139,159 @@ def _token() -> str:
     if raw.lower().startswith("bearer "):
         raw = raw[7:].strip()
     return raw
+
+
+def _refresh_token() -> str:
+    return os.environ.get("ELEVENLABS_REFRESH_TOKEN", "").strip()
+
+
+def _firebase_api_key() -> str:
+    return os.environ.get("FIREBASE_API_KEY", "").strip() or DEFAULT_FIREBASE_API_KEY
+
+
+def _firebase_uid() -> str:
+    return os.environ.get("ELEVENLABS_UID", "").strip()
+
+
+def _token_expiry(token: str) -> Optional[float]:
+    exp = _jwt_claims(token).get("exp")
+    return float(exp) if isinstance(exp, (int, float)) else None
+
+
+def _token_expired(token: str) -> bool:
+    if not token:
+        return True
+    expiry = _token_expiry(token)
+    return bool(expiry and expiry <= time.time())
+
+
+def _persist_refresh_token(value: str) -> None:
+    """Write a rotated refresh token back to ``.env``; never log the value."""
+    if not value:
+        return
+    os.environ["ELEVENLABS_REFRESH_TOKEN"] = value
+    try:
+        lines: List[str] = []
+        if os.path.isfile(ENV_PATH):
+            with open(ENV_PATH, encoding="utf-8-sig") as handle:
+                lines = handle.read().splitlines()
+
+        output: List[str] = []
+        replaced = False
+        for line in lines:
+            if line.strip().startswith("ELEVENLABS_REFRESH_TOKEN="):
+                output.append(f"ELEVENLABS_REFRESH_TOKEN={value}")
+                replaced = True
+            else:
+                output.append(line)
+        if not replaced:
+            output.append(f"ELEVENLABS_REFRESH_TOKEN={value}")
+
+        text = "\n".join(output).rstrip("\n") + "\n"
+        temp_path = f"{ENV_PATH}.tmp"
+        with open(temp_path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        os.replace(temp_path, ENV_PATH)
+    except OSError as exc:
+        logger.warning(
+            "voice.refresh.persist_failed",
+            extra={
+                "event": "voice.refresh.persist_failed",
+                "error_type": type(exc).__name__,
+            },
+        )
+
+
+def _refresh_access_token() -> str:
+    """Exchange the Firebase refresh token for a fresh one-hour access token."""
+    refresh = _refresh_token()
+    if not refresh:
+        raise VoiceError(
+            "voice_token_missing",
+            "Voice is not configured. Set ELEVENLABS_REFRESH_TOKEN or ELEVENLABS_TOKEN.",
+            503,
+        )
+
+    try:
+        response = requests.post(
+            FIREBASE_TOKEN_URL,
+            params={"key": _firebase_api_key()},
+            headers={
+                # The Web API key is referrer-restricted to the site, so mirror
+                # the browser's origin or Google answers 403.
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://elevenlabs.io",
+                "Referer": "https://elevenlabs.io/",
+            },
+            data={"grant_type": "refresh_token", "refresh_token": refresh},
+            timeout=_FIREBASE_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise VoiceError(
+            "voice_upstream_error",
+            f"Token refresh failed ({type(exc).__name__}).",
+            502,
+        ) from None
+
+    if response.status_code != 200:
+        raise VoiceError(
+            "voice_token_expired",
+            "The ElevenLabs refresh token was rejected. Sign in again to refresh it.",
+            503,
+        )
+
+    try:
+        body = response.json()
+    except ValueError:
+        raise VoiceError("voice_upstream_error", "Token refresh returned invalid JSON.", 502)
+
+    token = ""
+    if isinstance(body, dict):
+        token = body.get("access_token") or body.get("id_token") or ""
+    token = token.strip() if isinstance(token, str) else ""
+    if not token:
+        raise VoiceError("voice_token_expired", "Token refresh returned no access token.", 503)
+
+    rotated = body.get("refresh_token") if isinstance(body, dict) else None
+    if isinstance(rotated, str) and rotated.strip() and rotated.strip() != refresh:
+        _persist_refresh_token(rotated.strip())
+
+    try:
+        seconds = float(body.get("expires_in") or 3600)
+    except (TypeError, ValueError):
+        seconds = 3600.0
+
+    global _cached_access_token, _cached_access_expiry
+    _cached_access_token = token
+    _cached_access_expiry = time.time() + max(60.0, seconds)
+    return token
+
+
+def _access_token() -> str:
+    """Return a valid access token, refreshing it through Firebase if needed."""
+    manual = _token()
+    if manual:
+        if not _token_expired(manual):
+            return manual
+        if not _refresh_token():
+            raise VoiceError(
+                "voice_token_expired",
+                "The ElevenLabs access token has expired. Set ELEVENLABS_REFRESH_TOKEN.",
+                503,
+            )
+
+    with _TOKEN_LOCK:
+        if _cached_access_token and _cached_access_expiry > time.time() + REFRESH_SKEW_SECONDS:
+            return _cached_access_token
+
+    return _refresh_access_token()
+
+
+def _forget_cached_token() -> None:
+    global _cached_access_token, _cached_access_expiry
+    with _TOKEN_LOCK:
+        _cached_access_token = None
+        _cached_access_expiry = 0.0
 
 
 def _base_url() -> str:
@@ -159,7 +330,17 @@ def _iso(timestamp: float) -> str:
 
 
 def token_state() -> Dict[str, Any]:
-    """Describe the configured web token without ever returning the token."""
+    """Describe the configured credentials without ever returning a token."""
+    refresh = _refresh_token()
+    if refresh:
+        return {
+            "configured": True,
+            "available": True,
+            "expired": False,
+            "expires_at": _iso(_cached_access_expiry) if _cached_access_expiry else None,
+            "reason": "refresh",
+        }
+
     raw = _token()
     if not raw:
         return {
@@ -228,12 +409,27 @@ def resolve_voice_id(name: Any = None, language: str = "en") -> str:
 def status() -> Dict[str, Any]:
     """Public voice status for the UI: availability, expiry, and voice names."""
     state = token_state()
+    refresh_configured = bool(_refresh_token())
+    if refresh_configured:
+        try:
+            _access_token()
+            state = token_state()
+        except VoiceError as exc:
+            state = {
+                "configured": True,
+                "available": False,
+                "expired": True,
+                "expires_at": state.get("expires_at"),
+                "reason": exc.code,
+            }
+
     return {
         "configured": state["configured"],
         "available": state["available"],
         "expired": state["expired"],
         "expires_at": state["expires_at"],
         "reason": state["reason"],
+        "refresh_configured": refresh_configured,
         "voices": voice_names(),
         "default_voice": default_voice_name(),
         "model": MODEL,
@@ -302,6 +498,27 @@ def build_payload(text: str, voice_id: str) -> Dict[str, Any]:
 # --- HTTP -----------------------------------------------------------------
 
 
+def _response_detail(response: requests.Response) -> str:
+    """Best-effort provider error text, truncated; never a token or the input."""
+    try:
+        body = response.json()
+    except ValueError:
+        try:
+            body = response.text
+        except Exception:
+            body = ""
+    if isinstance(body, dict):
+        detail = body.get("detail")
+        if isinstance(detail, dict):
+            body = " ".join(str(value) for value in detail.values())
+        elif detail is not None:
+            body = str(detail)
+        else:
+            body = " ".join(str(value) for value in body.values())
+    text = str(body).strip()
+    return text[:300]
+
+
 def _post(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> requests.Response:
     last_error: Optional[Exception] = None
     for attempt in range(1, ATTEMPTS + 1):
@@ -328,16 +545,27 @@ def _post(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> request
             return response
 
         status_code = response.status_code
-        response.close()
-        if status_code in (429, 500, 502, 503, 504) and attempt < ATTEMPTS:
-            time.sleep(2.0 ** attempt)
-            continue
         if status_code in (401, 403):
+            detail = _response_detail(response)
+            response.close()
+            lowered = detail.lower()
+            if "unusual activity" in lowered or "free tier" in lowered:
+                raise VoiceError(
+                    "voice_account_restricted",
+                    "ElevenLabs has restricted free-tier access for this account. "
+                    "Upgrade the plan or use a different account.",
+                    503,
+                )
             raise VoiceError(
                 "voice_token_expired",
                 "The ElevenLabs web token was rejected or has expired.",
                 503,
             )
+
+        response.close()
+        if status_code in (429, 500, 502, 503, 504) and attempt < ATTEMPTS:
+            time.sleep(2.0 ** attempt)
+            continue
         raise VoiceError(
             "voice_upstream_error",
             f"ElevenLabs returned status {status_code}.",
@@ -363,26 +591,13 @@ def synthesize(
             400,
         )
 
-    state = token_state()
-    if not state["configured"]:
-        raise VoiceError(
-            "voice_token_missing",
-            "Voice is not configured. Set ELEVENLABS_TOKEN.",
-            503,
-        )
-    if not state["available"]:
-        raise VoiceError(
-            "voice_token_expired",
-            "The ElevenLabs web token has expired. Refresh ELEVENLABS_TOKEN.",
-            503,
-        )
-
     voice_id = resolve_voice_id(voice_name, language)
     chunks = chunk_inputs([{"text": cleaned, "voice_id": voice_id}])
     base = _base_url()
     url = f"{base}{ENDPOINT}"
     headers = dict(WEB_HEADERS)
-    headers["authorization"] = f"Bearer {_token()}"
+    headers["authorization"] = f"Bearer {_access_token()}"
+    refreshed = False
 
     started = time.perf_counter()
     audio = bytearray()
@@ -399,7 +614,22 @@ def synthesize(
                         item["text"] for item in chunks[index - 1]
                     )[-100:]
                     payload["previous_text"] = previous_text
-            response = _post(url, headers, payload)
+            try:
+                response = _post(url, headers, payload)
+            except VoiceError as exc:
+                # The cached access token can expire between refreshes; mint a
+                # new one once and retry the same chunk.
+                if (
+                    exc.code == "voice_token_expired"
+                    and _refresh_token()
+                    and not refreshed
+                ):
+                    refreshed = True
+                    _forget_cached_token()
+                    headers["authorization"] = f"Bearer {_access_token()}"
+                    response = _post(url, headers, payload)
+                else:
+                    raise
             try:
                 request_id = (
                     response.headers.get("request-id")
