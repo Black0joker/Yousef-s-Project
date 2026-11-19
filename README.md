@@ -92,14 +92,52 @@ How it works:
 5. **`POST /api/chat/stream`** — the server calls Token Harbor and streams the
    reply back token by token over SSE.
 6. **`POST /api/chat`** — non-streaming fallback returning `{"reply": "..."}`.
-7. **Memory tools** — the model can save and recall personal facts, and ask for
+7. **Conversation history** — every turn is also written to the server, so
+   transcripts survive a cleared browser. `GET /api/conversations` lists the
+   signed-in user's threads and `GET /api/conversations/<id>` returns one thread
+   with its turns. See “Conversation history” below.
+8. **Memory tools** — the model can save and recall personal facts, and ask for
    the account name. Tool activity is streamed as transient status frames, so
    the UI can show “Saving memory...” without inventing assistant text.
-8. **`/settings`** — update your name and email, or change your password. The
+9. **`/settings`** — update your name and email, or change your password. The
    avatar in the chat header links here.
-9. **`/call`** — a voice-call screen: speak (or type) and hear SAGE reply using
-   the ElevenLabs web request. The chat header links to it. See “Voice calls”
-   below.
+10. **`/call`** — a voice-call screen: speak (or type) and hear SAGE reply using
+    the ElevenLabs web request. The chat header links to it. See “Voice calls”
+    below.
+
+## Conversation history
+
+The browser keeps a fast local copy of the thread in
+`localStorage` (`th_chat_history_<user id>`), but that is a cache, not a record:
+it disappears with the browser profile. Every turn is therefore also written to
+the server in two tables:
+
+- `conversations` — one row per thread (`mode`, `language`, `started_at`,
+  `ended_at`).
+- `conversation_turns` — one row per message, with `role`, `content`,
+  `created_at`, `finish_reason`, `model`, `latency_ms`, `outcome`, and the names
+  of any tools that ran.
+
+| Method | Endpoint | Result |
+| --- | --- | --- |
+| `GET` | `/api/conversations` | `200 {conversations: [...]}` newest first |
+| `GET` | `/api/conversations/<id>` | `200 {conversation, turns}` or `404 not_found` |
+
+`POST /api/chat` and `POST /api/chat/stream` accept an optional
+`conversation_id` and return the id they used, so a client can continue a thread.
+An id that belongs to another account is ignored and a new thread starts; it is
+never a way to read or write someone else's transcript.
+
+Behaviour worth knowing:
+
+- **Persistence is best effort.** A database error while recording a turn never
+  fails the reply the user is waiting for.
+- **Stopped and failed turns are still recorded**, flagged with
+  `outcome: "stopped"` or `"error"`, and keep whatever text had streamed. A
+  missing turn would be worse than a flagged one.
+- **Message text is never logged.** `conversation.sql` logs the statement with
+  `?` placeholders, matching the memory SQL log.
+- Deleting a user cascades to their conversations and turns.
 
 ## Accounts & authentication
 
@@ -130,6 +168,8 @@ Logging in returns a **JWT** (HS256, 7 days) that the browser keeps in
 | `POST` | `/api/auth/password` | `current_password, new_password, confirm_password` | `204` |
 | `POST` | `/api/auth/logout` | – | `204` |
 | `POST` | `/api/location` | `latitude, longitude` | `204` |
+| `GET` | `/api/conversations` | – | `200 {conversations}` |
+| `GET` | `/api/conversations/<id>` | – | `200 {conversation, turns}` |
 
 \* `current_password` is required only when the email address actually changes.
 

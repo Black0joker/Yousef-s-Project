@@ -964,5 +964,173 @@ class TestLastMessageAt(AppTestCase):
         self.assertIsNone(self.user_row()["last_message_at"])
 
 
+class TestConversationPersistence(AppTestCase):
+    """Every chat turn is also written to the server-side transcript."""
+
+    def stored_turns(self):
+        connection = auth.connect()
+        try:
+            rows = connection.execute(
+                "SELECT * FROM conversation_turns ORDER BY created_at ASC, rowid ASC"
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            connection.close()
+
+    def test_non_streaming_chat_persists_both_turns(self):
+        self.use_client(FakeClient(reply="hello back"))
+        response = self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertIn("conversation_id", body)
+
+        turns = self.stored_turns()
+        self.assertEqual([turn["role"] for turn in turns], ["user", "assistant"])
+        self.assertEqual(turns[0]["content"], "hi")
+        self.assertEqual(turns[1]["content"], "hello back")
+        self.assertEqual(turns[1]["outcome"], "ok")
+        self.assertEqual(turns[0]["conversation_id"], body["conversation_id"])
+
+    def test_streaming_chat_persists_the_joined_answer(self):
+        events = [
+            {"type": "delta", "content": "Hel"},
+            {"type": "delta", "content": "lo"},
+            {"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []},
+        ]
+        self.use_client(FakeClient(events=events))
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        response.get_data()
+
+        turns = self.stored_turns()
+        self.assertEqual([turn["role"] for turn in turns], ["user", "assistant"])
+        self.assertEqual(turns[1]["content"], "Hello")
+        self.assertEqual(turns[1]["finish_reason"], "stop")
+
+    def test_streaming_records_tool_names_without_arguments(self):
+        events = [
+            {"type": "tool_start", "name": "save_memory"},
+            {"type": "tool_end", "name": "save_memory", "ok": True},
+            {"type": "delta", "content": "Saved."},
+            {"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []},
+        ]
+        self.use_client(FakeClient(events=events))
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "remember tea"}]},
+            headers=self.headers,
+        )
+        response.get_data()
+
+        assistant = self.stored_turns()[1]
+        self.assertEqual(assistant["tool_calls_json"], '[{"name": "save_memory", "ok": true}]')
+
+    def test_an_errored_turn_is_recorded_as_error(self):
+        error = app_module.TokenHarborError("boom", status_code=500, code="internal_error")
+        self.use_client(FakeClient(events=[], stream_error=error))
+        response = self.http.post(
+            "/api/chat/stream",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers=self.headers,
+        )
+        response.get_data()
+
+        assistant = self.stored_turns()[1]
+        self.assertEqual(assistant["outcome"], "error")
+
+    def test_a_rejected_request_persists_nothing(self):
+        self.use_client(FakeClient())
+        response = self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "system", "content": "x"}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.stored_turns(), [])
+
+    def test_conversations_are_scoped_to_the_caller(self):
+        self.use_client(FakeClient(reply="mine"))
+        mine = self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers=self.headers,
+        ).get_json()["conversation_id"]
+
+        listing = self.http.get("/api/conversations", headers=self.headers).get_json()
+        self.assertEqual([item["id"] for item in listing["conversations"]], [mine])
+
+        other = dict(CREDENTIALS)
+        other["email"] = "someone@example.com"
+        token = self.http.post("/api/auth/register", json=other).get_json()["token"]
+        other_headers = {"Authorization": "Bearer " + token}
+
+        self.assertEqual(
+            self.http.get("/api/conversations", headers=other_headers).get_json()["conversations"],
+            [],
+        )
+        self.assertEqual(
+            self.http.get(f"/api/conversations/{mine}", headers=other_headers).status_code, 404
+        )
+
+    def test_conversation_detail_returns_the_turns(self):
+        self.use_client(FakeClient(reply="answer"))
+        conversation_id = self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "question"}]},
+            headers=self.headers,
+        ).get_json()["conversation_id"]
+
+        detail = self.http.get(
+            f"/api/conversations/{conversation_id}", headers=self.headers
+        ).get_json()
+        self.assertEqual(detail["conversation"]["id"], conversation_id)
+        self.assertEqual([turn["content"] for turn in detail["turns"]], ["question", "answer"])
+
+    def test_conversation_api_requires_auth(self):
+        self.assertEqual(self.http.get("/api/conversations").status_code, 401)
+        self.assertEqual(self.http.get("/api/conversations/anything").status_code, 401)
+
+    def test_unknown_conversation_is_404(self):
+        response = self.http.get("/api/conversations/does-not-exist", headers=self.headers)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.get_json()["error"]["code"], "not_found")
+
+    def test_a_supplied_conversation_id_continues_that_thread(self):
+        self.use_client(FakeClient(reply="first"))
+        conversation_id = self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "one"}]},
+            headers=self.headers,
+        ).get_json()["conversation_id"]
+
+        self.use_client(FakeClient(reply="second"))
+        again = self.http.post(
+            "/api/chat",
+            json={
+                "messages": [
+                    {"role": "user", "content": "one"},
+                    {"role": "assistant", "content": "first"},
+                    {"role": "user", "content": "two"},
+                ],
+                "conversation_id": conversation_id,
+            },
+            headers=self.headers,
+        ).get_json()
+        self.assertEqual(again["conversation_id"], conversation_id)
+        # only the newest user message is stored for the continued turn
+        self.assertEqual(
+            [turn["content"] for turn in self.stored_turns()],
+            ["one", "first", "two", "second"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

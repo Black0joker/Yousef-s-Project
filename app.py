@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from flask import Flask, Response, jsonify, redirect, render_template, request, stream_with_context
 
 import auth
+import conversations
 import logging_config
 import memory
 import voice
@@ -112,6 +113,7 @@ logging_config.init_request_logging(app)
 # register the users/memory tables, the teardown handler and auth middleware
 auth.init_db()
 memory.init_db()
+conversations.init_db()
 auth.init_app(app)
 
 
@@ -545,6 +547,16 @@ def api_chat():
     except TokenHarborError as exc:
         return jsonify(error_body(exc)), 500
 
+    # Persist both sides of the turn. Best effort: a logging failure must not
+    # break the reply the user is waiting for.
+    user_id = (auth.current_user() or {}).get("id")
+    conversation_id = conversations.resolve_conversation(
+        user_id, data.get("conversation_id"), mode, language
+    )
+    conversations.record_user_turn(
+        user_id, conversation_id, conversations.last_user_message(payload), model=model_name()
+    )
+
     started = time.perf_counter()
     logger.info(
         "chat.request",
@@ -588,7 +600,15 @@ def api_chat():
             "outcome": "ok",
         },
     )
-    return jsonify({"reply": reply})
+    conversations.record_assistant_turn(
+        user_id,
+        conversation_id,
+        reply,
+        model=model_name(),
+        latency_ms=elapsed_ms(started),
+        outcome="ok",
+    )
+    return jsonify({"reply": reply, "conversation_id": conversation_id})
 
 
 @app.post("/api/chat/stream")
@@ -610,6 +630,14 @@ def api_chat_stream():
     except TokenHarborError as exc:
         return jsonify(error_body(exc)), 500
 
+    user_id = (auth.current_user() or {}).get("id")
+    conversation_id = conversations.resolve_conversation(
+        user_id, data.get("conversation_id"), mode, language
+    )
+    conversations.record_user_turn(
+        user_id, conversation_id, conversations.last_user_message(payload), model=model_name()
+    )
+
     logger.info(
         "chat.request",
         extra={
@@ -622,7 +650,6 @@ def api_chat_stream():
         },
     )
     tools, handlers = memory_toolset()
-    user_id = (auth.current_user() or {}).get("id")
     stream_id, cancel, entry = register_stream(user_id)
 
     def on_open(response: Any) -> None:
@@ -639,6 +666,8 @@ def api_chat_stream():
         error_code: Optional[str] = None
         finish_reason: Optional[str] = None
         stopped = False
+        answer: List[str] = []
+        tool_calls: List[Dict[str, Any]] = []
         call_params = {"max_tokens": CALL_MAX_TOKENS} if mode == "call" else {}
         events = client.run_tools_events(
             messages=payload,
@@ -654,12 +683,16 @@ def api_chat_stream():
                     stopped = True
                     break
                 if event["type"] == "delta" and event.get("content"):
+                    answer.append(event["content"])
                     yield sse({"delta": event["content"]})
                 elif event["type"] == "reasoning" and event.get("content"):
                     yield sse({"reasoning": event["content"]})
                 elif event["type"] == "tool_start":
+                    tool_calls.append({"name": event.get("name"), "ok": None})
                     yield sse({"tool": {"name": event.get("name"), "status": "start"}})
                 elif event["type"] == "tool_end":
+                    if tool_calls:
+                        tool_calls[-1]["ok"] = bool(event.get("ok", True))
                     yield sse(
                         {
                             "tool": {
@@ -744,6 +777,18 @@ def api_chat_stream():
             except Exception:
                 pass
             unregister_stream(stream_id)
+            # Record the reply even when the turn stopped, errored, or the
+            # browser disconnected: a missing turn is worse than a flagged one.
+            conversations.record_assistant_turn(
+                user_id,
+                conversation_id,
+                "".join(answer),
+                finish_reason=finish_reason,
+                model=model_name(),
+                latency_ms=elapsed_ms(started),
+                outcome=outcome if outcome in conversations.VALID_OUTCOMES else "error",
+                tool_calls=tool_calls or None,
+            )
             logger.info(
                 "chat.stream.done",
                 extra={
@@ -779,6 +824,30 @@ def api_chat_stop():
             400,
         )
     return jsonify({"stopped": stop_stream(claims.get("id"), stream_id.strip())})
+
+
+# --- conversation API -----------------------------------------------------
+
+
+@app.get("/api/conversations")
+def api_conversations():
+    """The caller's saved threads, newest first."""
+    claims = auth.current_user() or {}
+    items = conversations.list_conversations(claims.get("id"), request.args.get("limit"))
+    return jsonify({"conversations": items})
+
+
+@app.get("/api/conversations/<conversation_id>")
+def api_conversation_detail(conversation_id: str):
+    """One thread and its turns; only the owner can read it."""
+    claims = auth.current_user() or {}
+    detail = conversations.get_conversation_detail(claims.get("id"), conversation_id)
+    if detail is None:
+        return (
+            jsonify({"error": {"code": "not_found", "message": "Conversation not found."}}),
+            404,
+        )
+    return jsonify(detail)
 
 
 # --- voice API ------------------------------------------------------------

@@ -15,6 +15,9 @@ behavior changes. This file covers workflow and non-obvious wiring.
   `init_app(app)`.
 - `memory.py` — personal-memory schema, entity/relationship/fact CRUD, and the
   `save_memory` / `recall_memory` / `get_name` tool schemas and handlers.
+- `conversations.py` — server-side transcript persistence: `conversations` /
+  `conversation_turns`, the read API helpers, and the request-scoped recorders.
+  Writes are best effort and must never fail a chat request.
 - `voice.py` — ElevenLabs web-request client for call mode: session token
   expiry, payload/chunking, MP3 synthesis, and redacted logging.
 - `logging_config.py` — readable text logging by default, JSON option, request
@@ -102,6 +105,29 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   predicates (`likes`, `hobby`, `pet`) to that set — it would silently discard
   real data. Identical re-saves are a no-op, checked *before* the expire step so
   an unchanged value keeps its original row.
+
+### Conversation persistence
+
+- `app.py` imports and initialises `conversations` right after `memory`:
+  `auth.init_db()` → `memory.init_db()` → `conversations.init_db()`. Add a new
+  table here, not in `memory.py`.
+- Recording is **best effort by design**. `record_user_turn` /
+  `record_assistant_turn` / `append_turn` swallow and log failures and return
+  `None`; never make them raise, or a logging bug breaks the chat reply.
+- The streaming route records the assistant turn from `generate()`'s `finally`,
+  using the accumulated `answer` list. It must run on every exit path — normal,
+  stopped, errored, `GeneratorExit`, and `BrokenPipeError` — so a stopped turn is
+  stored with `outcome="stopped"` instead of vanishing.
+- `conversations.resolve_conversation()` honors a client-supplied
+  `conversation_id` only when the row belongs to the caller; anything else
+  silently starts a new thread. Never trust the id as an authorization check.
+- Every conversation and turn row is filtered by `user_id`, and the insert path
+  re-checks conversation ownership inside the same transaction.
+- Message text is personal data: `conversations._execute` logs statement text
+  with `?` placeholders only and never bind values, mirroring `memory._execute`.
+  Tool arguments/results are not stored — only the tool *name* and its ok flag.
+- `tests/test_conversations.py` covers the module and
+  `tests/test_app.py::TestConversationPersistence` covers the routes.
 
 ### Logging
 
