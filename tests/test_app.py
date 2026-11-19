@@ -162,6 +162,7 @@ class TestPages(AppTestCase):
         self.assertIn(b'href="/call"', response.data)
         self.assertIn(b'href="/memory"', response.data)
         self.assertIn(b'href="/schedule"', response.data)
+        self.assertIn(b'href="/trusted"', response.data)
 
     def test_chat_page_has_language_toggle(self):
         body = self.http.get("/chat").data
@@ -1607,6 +1608,158 @@ class TestPlacesApi(AppTestCase):
         self.assertEqual(
             self.http.get("/api/location/context?latitude=0&longitude=0").status_code, 401
         )
+
+
+class TestTrustedApi(AppTestCase):
+    """Trusted-contacts endpoints and the sharing gates."""
+
+    def register(self, email):
+        payload = dict(CREDENTIALS)
+        payload["email"] = email
+        body = self.http.post("/api/auth/register", json=payload).get_json()
+        return {"Authorization": "Bearer " + body["token"]}, body["user"]["id"]
+
+    def invite(self, headers, email, **overrides):
+        payload = {"email": email}
+        payload.update(overrides)
+        return self.http.post("/api/trusted", json=payload, headers=headers)
+
+    def enable_sharing(self, headers):
+        return self.http.put(
+            "/api/consents/trusted_sharing", json={"granted": True}, headers=headers
+        )
+
+    def test_invite_creates_a_pending_contact(self):
+        response = self.invite(self.headers, "friend@example.com")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.get_json()["status"], "pending")
+
+    def test_invite_does_not_reveal_whether_the_email_exists(self):
+        known = self.invite(self.headers, "friend@example.com")
+        unknown = self.invite(self.headers, "nobody@example.com")
+        self.assertEqual(known.status_code, unknown.status_code)
+        self.assertEqual(known.get_json()["status"], unknown.get_json()["status"])
+
+    def test_cannot_invite_yourself(self):
+        response = self.invite(self.headers, CREDENTIALS["email"])
+        self.assertEqual(response.status_code, 400)
+
+    def test_invite_rejects_a_bad_email(self):
+        self.assertEqual(self.invite(self.headers, "not-an-email").status_code, 400)
+
+    def test_full_flow_invite_accept_peek(self):
+        friend_headers, _ = self.register("friend@example.com")
+        self.enable_sharing(self.headers)
+
+        contact = self.invite(self.headers, "friend@example.com").get_json()
+
+        # nothing visible before accepting
+        self.assertEqual(
+            self.http.get(
+                f"/api/trusted/people/{contact['id']}", headers=friend_headers
+            ).status_code,
+            403,
+        )
+
+        invitations = self.http.get(
+            "/api/trusted/invitations", headers=friend_headers
+        ).get_json()["invitations"]
+        self.assertEqual([item["id"] for item in invitations], [contact["id"]])
+
+        accepted = self.http.post(
+            f"/api/trusted/invitations/{contact['id']}/accept", headers=friend_headers
+        )
+        self.assertEqual(accepted.status_code, 204)
+
+        peek = self.http.get(
+            f"/api/trusted/people/{contact['id']}", headers=friend_headers
+        )
+        self.assertEqual(peek.status_code, 200)
+        self.assertIn("last_seen", peek.get_json())
+
+    def test_peek_is_forbidden_while_sharing_is_off(self):
+        friend_headers, _ = self.register("friend@example.com")
+        contact = self.invite(self.headers, "friend@example.com").get_json()
+        self.http.post(
+            f"/api/trusted/invitations/{contact['id']}/accept", headers=friend_headers
+        )
+        # the owner never granted trusted_sharing
+        self.assertEqual(
+            self.http.get(
+                f"/api/trusted/people/{contact['id']}", headers=friend_headers
+            ).status_code,
+            403,
+        )
+
+    def test_owner_revocation_blocks_the_viewer(self):
+        friend_headers, _ = self.register("friend@example.com")
+        self.enable_sharing(self.headers)
+        contact = self.invite(self.headers, "friend@example.com").get_json()
+        self.http.post(
+            f"/api/trusted/invitations/{contact['id']}/accept", headers=friend_headers
+        )
+
+        revoked = self.http.delete(f"/api/trusted/{contact['id']}", headers=self.headers)
+        self.assertEqual(revoked.status_code, 204)
+        self.assertEqual(
+            self.http.get(
+                f"/api/trusted/people/{contact['id']}", headers=friend_headers
+            ).status_code,
+            403,
+        )
+
+    def test_decline(self):
+        friend_headers, _ = self.register("friend@example.com")
+        contact = self.invite(self.headers, "friend@example.com").get_json()
+        response = self.http.post(
+            f"/api/trusted/invitations/{contact['id']}/decline", headers=friend_headers
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(
+            self.http.get(
+                "/api/trusted/invitations", headers=friend_headers
+            ).get_json()["invitations"],
+            [],
+        )
+
+    def test_watching_lists_accepted_owners(self):
+        friend_headers, _ = self.register("friend@example.com")
+        self.enable_sharing(self.headers)
+        contact = self.invite(self.headers, "friend@example.com").get_json()
+        self.http.post(
+            f"/api/trusted/invitations/{contact['id']}/accept", headers=friend_headers
+        )
+        watching = self.http.get("/api/trusted/watching", headers=friend_headers).get_json()
+        self.assertEqual(len(watching["watching"]), 1)
+
+    def test_a_stranger_cannot_peek(self):
+        friend_headers, _ = self.register("friend@example.com")
+        stranger_headers, _ = self.register("stranger@example.com")
+        self.enable_sharing(self.headers)
+        contact = self.invite(self.headers, "friend@example.com").get_json()
+        self.http.post(
+            f"/api/trusted/invitations/{contact['id']}/accept", headers=friend_headers
+        )
+        self.assertEqual(
+            self.http.get(
+                f"/api/trusted/people/{contact['id']}", headers=stranger_headers
+            ).status_code,
+            403,
+        )
+
+    def test_trusted_api_requires_auth(self):
+        self.assertEqual(self.http.get("/api/trusted").status_code, 401)
+        self.assertEqual(self.http.get("/api/trusted/invitations").status_code, 401)
+        self.assertEqual(self.http.get("/api/trusted/watching").status_code, 401)
+        self.assertEqual(self.http.get("/api/trusted/people/x").status_code, 401)
+
+    def test_trusted_page_renders_as_public_shell(self):
+        response = self.http.get("/trusted")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"trusted-page.js", response.data)
+        self.assertIn(b'id="trusted-list"', response.data)
+        self.assertIn(b'id="invites-list"', response.data)
+        self.assertIn(b'id="watching-list"', response.data)
 
 
 if __name__ == "__main__":

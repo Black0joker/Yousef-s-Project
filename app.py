@@ -35,6 +35,7 @@ import logging_config
 import memory
 import places
 import schedule
+import trusted
 import voice
 from core import Message, TokenHarbor, TokenHarborError
 
@@ -118,6 +119,7 @@ memory.init_db()
 conversations.init_db()
 schedule.init_db()
 places.init_db()
+trusted.init_db()
 auth.init_app(app)
 
 
@@ -497,6 +499,12 @@ def memory_page():
 def schedule_page():
     """Schedule shell: today, upcoming appointments, and routines."""
     return render_template("schedule.html")
+
+
+@app.get("/trusted")
+def trusted_page():
+    """Trusted-contacts shell: invites, acceptances, and who I can see."""
+    return render_template("trusted.html")
 
 
 # --- authentication API ---------------------------------------------------
@@ -1278,6 +1286,96 @@ def api_location_context():
     except ValueError as exc:
         return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
     return jsonify({"context": places.context_at(claims.get("id"), latitude, longitude)})
+
+
+# --- trusted contacts API -------------------------------------------------
+
+
+@app.get("/api/trusted")
+def api_trusted_list():
+    """People this user has invited, with their status."""
+    claims = auth.current_user() or {}
+    return jsonify({"trusted": trusted.list_trusted(claims.get("id"))})
+
+
+@app.post("/api/trusted")
+def api_trusted_invite():
+    """Invite someone by email. Reveals nothing about whether they exist."""
+    claims = auth.current_user() or {}
+    data = request.get_json(silent=True) or {}
+    try:
+        contact = trusted.invite(
+            claims.get("id"),
+            data.get("email"),
+            can_see_location=data.get("can_see_location"),
+            can_see_last_seen=data.get("can_see_last_seen"),
+        )
+    except memory.MemoryError as exc:
+        return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
+    return jsonify(contact), 201
+
+
+@app.delete("/api/trusted/<contact_id>")
+def api_trusted_revoke(contact_id: str):
+    """Owner-side revocation: the viewer loses access immediately."""
+    claims = auth.current_user() or {}
+    if not trusted.revoke(claims.get("id"), contact_id):
+        return jsonify({"error": {"code": "not_found", "message": "Contact not found."}}), 404
+    return "", 204
+
+
+@app.get("/api/trusted/invitations")
+def api_trusted_invitations():
+    """Invitations addressed to the caller's email."""
+    claims = auth.current_user() or {}
+    return jsonify({"invitations": trusted.invitations(claims.get("id"))})
+
+
+@app.post("/api/trusted/invitations/<contact_id>/accept")
+def api_trusted_accept(contact_id: str):
+    claims = auth.current_user() or {}
+    if not trusted.accept(claims.get("id"), contact_id):
+        return jsonify({"error": {"code": "not_found", "message": "Invitation not found."}}), 404
+    return "", 204
+
+
+@app.post("/api/trusted/invitations/<contact_id>/decline")
+def api_trusted_decline(contact_id: str):
+    claims = auth.current_user() or {}
+    if not trusted.decline(claims.get("id"), contact_id):
+        return jsonify({"error": {"code": "not_found", "message": "Invitation not found."}}), 404
+    return "", 204
+
+
+@app.get("/api/trusted/watching")
+def api_trusted_watching():
+    """People who trust the caller enough to share their activity."""
+    claims = auth.current_user() or {}
+    return jsonify({"watching": trusted.watching(claims.get("id"))})
+
+
+@app.get("/api/trusted/people/<contact_id>")
+def api_trusted_peek(contact_id: str):
+    """Last seen and (when allowed) location for one owner.
+
+    ``403`` when the caller is not an accepted contact, or the owner has turned
+    ``trusted_sharing`` off.
+    """
+    claims = auth.current_user() or {}
+    result = trusted.peek(claims.get("id"), contact_id)
+    if result is None:
+        return (
+            jsonify(
+                {
+                    "error": {
+                        "code": "forbidden",
+                        "message": "You cannot see this person's activity.",
+                    }
+                }
+            ),
+            403,
+        )
+    return jsonify(result)
 
 
 # --- location API ---------------------------------------------------------

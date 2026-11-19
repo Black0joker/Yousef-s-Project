@@ -55,7 +55,9 @@ SELF_ALIASES = frozenset({"current user", "me", "i", "myself", "self", "أنا",
 
 #: Consent kinds a feature must check before using a user's data. Every entry is
 #: a switch the user owns.
-CONSENT_KINDS = frozenset({"location", "voice", "memory_sharing", "familiar_voice"})
+CONSENT_KINDS = frozenset(
+    {"location", "voice", "memory_sharing", "familiar_voice", "trusted_sharing"}
+)
 
 #: Kinds that are granted until the user explicitly revokes them. Everything
 #: else requires an explicit opt-in. A revoke row always wins, so turning a

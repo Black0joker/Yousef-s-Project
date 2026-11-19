@@ -241,6 +241,42 @@ would leak the user's own data for no benefit. Coordinates are never logged.
 inference about the user's state. The requirement is explicit that being
 somewhere new must not be treated as confusion or danger.
 
+## Trusted people
+
+A user can nominate someone — by email — who is allowed to see their activity,
+so a supporter can notice when they have gone quiet. `/trusted` is the public
+shell for it.
+
+**Three gates, all required.** Nothing is visible until:
+
+1. the invitation is **accepted** by the invited email,
+2. it is **not revoked** by either side, and
+3. the owner grants the **`trusted_sharing`** consent (default **off**).
+
+Every read re-checks all three; nothing is cached and nothing is trusted from
+the client.
+
+**What a trusted person can see.** `GET /api/trusted/people/<id>` returns:
+
+| Field | Meaning |
+| --- | --- |
+| `last_seen` | the newer of `last_message_at` and `last_location_at` |
+| `location` | `{latitude, longitude, at}`, or `null` when not shared |
+| `warning` | `true` once `last_seen` is older than 24 hours |
+| `status` | `active`, `stale`, or `unknown` |
+
+Per-contact permissions (`can_see_last_seen`, `can_see_location`) are chosen at
+invite time, so a viewer can follow last-seen without seeing a position.
+
+**The 24-hour warning is a prompt, not a diagnosis.** `status` is `unknown` —
+not `stale` — for someone who has never been active, so a new account never
+raises a false alarm. The warning means "no activity recorded", which can simply
+mean the app was closed; it must never be worded as evidence that something is
+wrong.
+
+**No email enumeration.** `POST /api/trusted` answers `201` whether or not the
+address has an account, so it cannot be used to probe for SAGE users.
+
 ## Accounts & authentication
 
 Accounts live in a small SQLite database (`instance/app.db`, override with
@@ -292,6 +328,14 @@ Logging in returns a **JWT** (HS256, 7 days) that the browser keeps in
 | `POST` | `/api/places` | `name, latitude, longitude, radius_m` | `201 {place}` |
 | `DELETE` | `/api/places/<id>` | – | `204` / `404` |
 | `GET` | `/api/location/context` | `latitude, longitude` | `200 {context}` / `null` |
+| `GET` | `/api/trusted` | – | `200 {trusted}` |
+| `POST` | `/api/trusted` | `email, can_see_location, can_see_last_seen` | `201 {contact}` |
+| `DELETE` | `/api/trusted/<id>` | – | `204` / `404` |
+| `GET` | `/api/trusted/invitations` | – | `200 {invitations}` |
+| `POST` | `/api/trusted/invitations/<id>/accept` | – | `204` / `404` |
+| `POST` | `/api/trusted/invitations/<id>/decline` | – | `204` / `404` |
+| `GET` | `/api/trusted/watching` | – | `200 {watching}` |
+| `GET` | `/api/trusted/people/<id>` | – | `200 {owner, last_seen, location, warning}` / `403` |
 
 \* `tz_offset` is minutes **east** of UTC, i.e. `-new Date().getTimezoneOffset()`.
 

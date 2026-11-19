@@ -48,6 +48,7 @@ PUBLIC_PATHS = frozenset(
         "/settings",
         "/memory",
         "/schedule",
+        "/trusted",
         "/favicon.ico",
         "/api/auth/register",
         "/api/auth/login",

@@ -24,6 +24,9 @@ behavior changes. This file covers workflow and non-obvious wiring.
 - `places.py` — familiar places and location context: named radius circles,
   server-side haversine matching, and the context payload (place, matching
   memories, next appointment). Never logs or returns coordinates.
+- `trusted.py` — trusted contacts: email-keyed invitations, accept/decline,
+  per-contact visibility, and the cross-user "last seen" read with the 24-hour
+  inactivity warning.
 - `voice.py` — ElevenLabs web-request client for call mode: session token
   expiry, payload/chunking, MP3 synthesis, and redacted logging.
 - `logging_config.py` — readable text logging by default, JSON option, request
@@ -202,6 +205,33 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - Coordinates are personal data and never appear in logs, in `/api/auth/me`, or
   in the context payload.
 
+### Trusted contacts
+
+- `trusted.py` is the **only** place that reads one user's row for another. Every
+  read must re-check all three gates — accepted, not revoked, and the owner's
+  `trusted_sharing` consent — inside `peek()`. Never cache the result, never
+  accept a client-supplied owner id, and never widen the query past
+  `email = <caller's email>`.
+- Invitations are keyed on **email**, not `contact_user_id`, so an invite works
+  before the other person registers. `_owner_email()` resolves the caller's
+  current address on each call.
+- `POST /api/trusted` must keep answering `201` for an address with no account.
+  Making the response depend on existence turns it into a user-enumeration
+  oracle, and `tests/test_trusted.py` pins the behaviour.
+- `trusted_sharing` is a consent kind and is **not** in
+  `DEFAULT_GRANTED_CONSENTS`: sharing with another person needs an explicit
+  opt-in even though `location` is on by default. Add its label to
+  `CONSENT_LABELS` in `static/memory-page.js` or the UI shows the raw key.
+- `status` is `unknown` when `last_seen` is null. A never-active user must not
+  report `stale`/`warning`; that would be a false alarm on a brand-new account.
+  The warning is a prompt to check in, never a claim that something is wrong.
+- `peek()` returns coordinates to the viewer by design — that is the feature, and
+  it is the documented exception to the "never return coordinates" rule that
+  applies to `places.py` and `/api/auth/me`.
+- Accepting and declining verify the invitation belongs to the caller's email;
+  `decline()` updates by `email`, not `owner_id`, because the caller is the
+  viewer rather than the owner.
+
 ### Logging
 
 - Route every memory SQL statement through `_execute(...)`: it emits
@@ -232,11 +262,11 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - All routes are guarded by the auth middleware except `PUBLIC_PATHS` and
   `PUBLIC_PREFIXES` in `auth.py`. Add new public routes there; API paths get a
   JSON 401, page paths redirect to `/login`.
-- `/chat`, `/call`, `/settings`, `/memory`, and `/schedule` are intentionally
-  public, data-free HTML shells; authentication and user data come from
-  `/api/auth/me`, and every write goes through the guarded API
+- `/chat`, `/call`, `/settings`, `/memory`, `/schedule`, and `/trusted` are
+  intentionally public, data-free HTML shells; authentication and user data come
+  from `/api/auth/me`, and every write goes through the guarded API
   (`PATCH /api/auth/profile`, `POST /api/auth/password`, `DELETE /api/memory/...`,
-  `POST /api/appointments`).
+  `POST /api/appointments`, `POST /api/trusted`).
 - Profile updates reissue the JWT because `full_name`/`email` live in the claims;
   the client must `Session.save(...)` the returned token. Changing the email
   requires `current_password`, and both update paths use `auth.AuthError` codes.
@@ -342,6 +372,11 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   `fetch` skips the Bearer header and the 401 redirect. The one exception is
   `static/auth.js`, whose login/register POSTs run before a token exists and
   must not redirect on 401.
+- `templates/trusted.html` + `static/trusted-page.js` are the `/trusted` shell:
+  invite by email, accept/decline invitations, and expand a person to see their
+  last seen and location. The "View activity" toggle fetches
+  `/api/trusted/people/<id>` and renders the warning badge; a `403` means the
+  gates closed and must surface as an error, not as an empty card.
 - Browser state keys: `th_token`, `th_expires_at`, `th_user`, `th_theme`,
   `th_language`, and per-account `th_chat_history_<user id>`.
 - `templates/memory.html` + `static/memory-page.js` are the `/memory` shell:

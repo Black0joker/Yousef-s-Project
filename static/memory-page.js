@@ -32,6 +32,7 @@
       consentVoice: "Voice replies",
       consentMemorySharing: "Share memory with trusted people",
       consentFamiliarVoice: "Familiar voice",
+      consentTrustedSharing: "Share my activity with trusted people",
       on: "On",
       off: "Off",
       genericError: "Something went wrong. Please try again.",
@@ -59,6 +60,7 @@
       consentVoice: "الردود الصوتية",
       consentMemorySharing: "مشاركة الذاكرة مع أشخاص موثوقين",
       consentFamiliarVoice: "صوت مألوف",
+      consentTrustedSharing: "مشاركة نشاطي مع أشخاص موثوقين",
       on: "مفعّل",
       off: "متوقف",
       genericError: "حدث خطأ ما. حاول مرة أخرى.",
@@ -71,6 +73,7 @@
     voice: "consentVoice",
     memory_sharing: "consentMemorySharing",
     familiar_voice: "consentFamiliarVoice",
+    trusted_sharing: "consentTrustedSharing",
   };
 
   var lang = "en";
