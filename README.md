@@ -20,19 +20,25 @@ handling.
 ├── auth.py                # users, password hashing, JWTs, auth middleware
 ├── logging_config.py      # structured logs, request IDs, rotating file
 ├── memory.py              # personal memory schema, queries, agent tools
+├── voice.py               # ElevenLabs web-request client for call mode
 ├── templates/
 │   ├── login.html         # email + password
 │   ├── register.html      # first name, last name, email, password
-│   └── chat.html          # greeting + chat UI
+│   ├── chat.html          # greeting + chat UI
+│   └── call.html          # voice-call UI
 ├── static/
 │   ├── style.css
+│   ├── call.css           # voice-call screen styles
 │   ├── theme.js           # pre-paint light/dark bootstrap
 │   ├── session.js         # token storage + fetch wrapper (Bearer header)
 │   ├── auth.js            # login/register form handling
-│   └── chat.js            # streams replies, keeps history per user
+│   ├── chat.js            # streams replies, keeps history per user
+│   └── call.js            # mic input, call stream, full-reply TTS
 ├── prompts/
 │   ├── english.md         # SAGE system prompt (English)
-│   └── arabic.md          # SAGE system prompt (Arabic)
+│   ├── arabic.md          # SAGE system prompt (Arabic)
+│   ├── english-call.md    # spoken call persona (English)
+│   └── arabic-call.md     # spoken call persona (Arabic)
 ├── core/
 │   ├── __init__.py        # package exports
 │   └── core.py            # TokenHarbor client, streaming, history, tools
@@ -42,6 +48,7 @@ handling.
 │   ├── test_core.py       # client unit tests (local mock gateway, no network)
 │   ├── test_memory.py     # entities, relationships, facts, tool handlers
 │   ├── test_logging.py    # formatters, request IDs, file rotation, redaction
+│   ├── test_voice.py      # ElevenLabs payload/token/chunking/logging tests
 │   └── integration/
 │       └── test_integration.py   # live tests against tokenharbor.ai
 ├── instance/app.db        # SQLite user database (created at runtime, gitignored)
@@ -90,6 +97,9 @@ How it works:
    the UI can show “Saving memory...” without inventing assistant text.
 8. **`/settings`** — update your name and email, or change your password. The
    avatar in the chat header links here.
+9. **`/call`** — a voice-call screen: speak (or type) and hear SAGE reply using
+   the ElevenLabs web request. The chat header links to it. See “Voice calls”
+   below.
 
 ## Accounts & authentication
 
@@ -211,6 +221,12 @@ Config (all optional except the key):
 | `LOG_FILE` | `instance/app.log` | rotating log file; set to empty to disable |
 | `LOG_MAX_BYTES` | `5000000` | rotate the log file after this size |
 | `LOG_BACKUP_COUNT` | `5` | number of rotated log files to keep |
+| `ELEVENLABS_TOKEN` | — | browser session token for voice; expires about hourly |
+| `ELEVENLABS_BASE_URL` | `https://api.us.elevenlabs.io` | regional ElevenLabs host |
+| `ELEVENLABS_VOICE_ID` | `owl` voice | default voice id for spoken replies |
+| `ELEVENLABS_VOICE_ID_AR` | — | optional Arabic voice id |
+| `ELEVENLABS_STABILITY` | `0.5` | 0..1; lower is more expressive |
+| `ELEVENLABS_SIMILARITY` | `0.75` | 0..1; how tightly to hold the voice |
 
 Generate a signing key with:
 
@@ -352,6 +368,53 @@ flag off outside local debugging and avoid leaving it on in `instance/app.log`.
     SQL: SELECT f.*, e.name AS entity_name, … WHERE f.user_id = ? AND e.user_id = ? AND e.name = ? COLLATE NOCASE … LIMIT ?
     PARAMS: (1, 1, 'Sara', 20)
 ```
+
+## Voice calls
+
+The chat header links to the `/call` screen, which turns the chat into a spoken
+conversation:
+
+1. The user speaks (browser Web Speech API) or types.
+2. The transcript goes to the normal `/api/chat/stream` endpoint with
+   `mode: "call"`, so SAGE uses the spoken call persona and the memory tools.
+3. Speech is generated in whole segments, not sentences. If the model calls a
+   tool, the text before the call is sent immediately (so it plays while the
+   tool runs) and the text after the call is sent when the reply finishes.
+   Each segment goes to `POST /api/voice/speak`, which generates MP3 audio
+   through the ElevenLabs web request; the browser queues the segments in
+   order. Tool status frames are never spoken.
+
+The call screen unlocks audio on the Start gesture and pauses speech recognition
+while SAGE is speaking, so the microphone cannot hear the assistant and cancel
+its own playback.
+
+This follows the [ElevenApi](https://github.com/Black0joker/ElevenApi) approach:
+`POST /v1/text-to-dialogue/stream` with model `eleven_v4_exp` and a browser
+`authorization: Bearer eyJ...` session token. There is no `xi-api-key` path.
+
+### Getting a voice token
+
+1. Open <https://elevenlabs.io/app/speech-synthesis> and generate something.
+2. DevTools → Network → filter `stream` → open the `text-to-dialogue/stream`
+   request → Headers → Request Headers → copy `authorization: Bearer eyJ...`.
+3. Put it in `.env` as `ELEVENLABS_TOKEN=eyJ...`.
+
+The token expires after about an hour. `/api/voice/status` reports the expiry,
+and `/call` shows a banner when voice is unavailable; refresh the token to
+restore audio. Text chat and typed call turns keep working when voice is down.
+
+The server sends only assistant text to ElevenLabs. Voice text, tokens, and
+audio are never logged and never stored in chat history. One turn produces at
+most one request per text segment around tool calls; if a segment is longer
+than the provider's 2,000-character limit, the server splits that single
+segment with continuity metadata rather than the client sending many separate
+prompts.
+
+Call-mode system prompts also include a delivery-tag cheat sheet: square-bracket
+tags such as `[laughs]`, `[whispers]`, `[sympathetic]`, and `[thoughtful]` are
+performed instead of read aloud, while punctuation controls pacing (`...`, `--`,
+CAPS, `!`, `?`). Eleven v4 has no SSML and no markdown, so the model is told to
+use tags sparingly and never to read one aloud.
 
 The sections below describe the `core` client that the app is built on.
 
@@ -519,7 +582,8 @@ The offline suite covers the `core` client, the Flask app, authentication, and
 personal memory: registration, duplicate/case-insensitive emails, validation,
 login, JWT claims and expiry, the middleware, the per-message delete/prompt
 rules, memory saves/queries, user isolation, replacement/expiry behavior, tool
-lifecycle events, structured logging, request correlation, and log redaction.
+lifecycle events, structured logging, request correlation, log redaction, and
+the ElevenLabs payload/token/error handling.
 
 Integration tests default to the free model `deepseek-v4.1-flash:free` so they
 don't spend your balance. Override with `TH_TEST_MODEL`:

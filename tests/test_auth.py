@@ -288,6 +288,7 @@ class TestMiddleware(AuthTestCase):
         self.assertEqual(self.http.get("/login").status_code, 200)
         self.assertEqual(self.http.get("/register").status_code, 200)
         self.assertEqual(self.http.get("/chat").status_code, 200)
+        self.assertEqual(self.http.get("/call").status_code, 200)
         self.assertEqual(self.http.get("/settings").status_code, 200)
         self.assertEqual(self.http.get("/").status_code, 302)
 

@@ -44,6 +44,7 @@ PUBLIC_PATHS = frozenset(
         "/login",
         "/register",
         "/chat",
+        "/call",
         "/settings",
         "/favicon.ico",
         "/api/auth/register",

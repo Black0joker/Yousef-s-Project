@@ -4,12 +4,16 @@ Routes
 ------
 ``GET  /``                 redirects to the login page
 ``GET  /chat``             chat page: greeting + message input
+``GET  /call``             voice-call page: microphone + spoken replies
 ``POST /api/chat/stream``  streamed reply over SSE, including tool lifecycle
 ``POST /api/chat``         non-streaming JSON fallback
+``POST /api/voice/speak``  ElevenLabs text-to-speech for one sentence
+``GET  /api/voice/status`` voice token availability and expiry
 
-The browser never sees the API key: all calls go through this server, which
-prepends the system prompt as the message at index 0. Memory tool handlers are
-bound to the authenticated user, so the model never receives a user id.
+The browser never sees the Token Harbor or ElevenLabs API tokens: all calls go
+through this server, which prepends the system prompt as the message at index 0.
+Memory tool handlers are bound to the authenticated user, so the model never
+receives a user id.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from flask import Flask, Response, jsonify, redirect, render_template, request, 
 import auth
 import logging_config
 import memory
+import voice
 from core import Message, TokenHarbor, TokenHarborError
 
 logging_config.configure_logging()
@@ -73,6 +78,24 @@ LANGUAGE_DIRECTIVES = {
     "ar": "يجب أن تكون جميع ردودك باللغة العربية.",
 }
 
+#: Prompt document per conversation mode. ``call`` makes SAGE speak as though
+#: it placed a phone call to the user; the call prompt files fall back to the
+#: chat persona when missing.
+PROMPT_MODES = {
+    "chat": LANGUAGE_FILES,
+    "call": {"en": "english-call.md", "ar": "arabic-call.md"},
+}
+DEFAULT_MODE = "chat"
+
+#: Synthetic first user turn for a call so the assistant can greet the user.
+GREETING_TURNS = {
+    "en": "[The call has connected. Greet me warmly and briefly.]",
+    "ar": "[تم الاتصال. ابدأ بالتحية بمودة وباختصار.]",
+}
+
+#: Spoken turns should stay short; the provider bills by the character.
+CALL_MAX_TOKENS = 220
+
 app = Flask(__name__)
 
 # Request logging is registered before auth so rejected requests are logged too.
@@ -105,37 +128,57 @@ def normalize_language(value: Any) -> str:
     return DEFAULT_LANGUAGE
 
 
-def read_prompt(language: str) -> str:
-    """SAGE prompt file for ``language``, read fresh on every call.
+def normalize_mode(value: Any) -> str:
+    """Map a client-supplied mode to a supported mode, else the default."""
+    if isinstance(value, str) and value.strip().lower() in PROMPT_MODES:
+        return value.strip().lower()
+    return DEFAULT_MODE
+
+
+def read_prompt(language: str, mode: str = DEFAULT_MODE) -> str:
+    """SAGE prompt file for ``language`` and ``mode``, read fresh every call.
 
     Reading per request means editing a ``prompts/*.md`` file takes effect
-    without a restart. A missing or empty file falls back to the built-in text.
+    without a restart. A missing or empty call prompt falls back to the chat
+    persona, then to the built-in text.
     """
-    filename = LANGUAGE_FILES.get(language)
+    files = PROMPT_MODES.get(mode) or PROMPT_MODES[DEFAULT_MODE]
+    filename = files.get(language)
     if not filename:
         return DEFAULT_SYSTEM_PROMPT
     try:
         with open(os.path.join(PROMPTS_DIR, filename), encoding="utf-8") as handle:
             content = handle.read().strip()
     except OSError:
+        if mode != DEFAULT_MODE:
+            return read_prompt(language, DEFAULT_MODE)
         return DEFAULT_SYSTEM_PROMPT
-    return content or DEFAULT_SYSTEM_PROMPT
+    if content:
+        return content
+    if mode != DEFAULT_MODE:
+        return read_prompt(language, DEFAULT_MODE)
+    return DEFAULT_SYSTEM_PROMPT
 
 
-def system_prompt(language: str = DEFAULT_LANGUAGE) -> str:
-    """System prompt for ``language``.
+def system_prompt(language: str = DEFAULT_LANGUAGE, mode: str = DEFAULT_MODE) -> str:
+    """System prompt for ``language`` and ``mode``.
 
-    ``TH_SYSTEM_PROMPT`` overrides the persona for every language; otherwise the
-    matching ``prompts/*.md`` document is used. The generated memory schema
-    brief is always appended, so the model keeps the data model even when the
-    persona is overridden. A language directive is appended so the model replies
-    in the selected language.
+    ``TH_SYSTEM_PROMPT`` overrides the persona for every language and mode;
+    otherwise the matching ``prompts/*.md`` document is used. The generated
+    memory schema brief is always appended, so the model keeps the data model
+    even when the persona is overridden. A language directive is appended so the
+    model replies in the selected language.
     """
     code = normalize_language(language)
+    conversation = normalize_mode(mode)
     override = os.environ.get("TH_SYSTEM_PROMPT", "").strip()
-    base = override or read_prompt(code)
+    base = override or read_prompt(code, conversation)
     directive = LANGUAGE_DIRECTIVES[code]
-    return f"{base}\n\n{memory.prompt_brief()}\n\n{directive}"
+    parts = [base, memory.prompt_brief()]
+    if conversation == "call":
+        parts.append(voice.prompt_brief())
+    parts.append(directive)
+    return "\n\n".join(parts)
 
 
 _client: Optional[TokenHarbor] = None
@@ -289,9 +332,33 @@ def normalize_messages(raw: Any) -> List[Message]:
     return cleaned
 
 
-def build_payload(raw: Any, language: str = DEFAULT_LANGUAGE) -> List[Message]:
-    """Conversation with the system prompt for ``language`` inserted at index 0."""
-    return [{"role": "system", "content": system_prompt(language)}] + normalize_messages(raw)
+def build_payload(
+    raw: Any,
+    language: str = DEFAULT_LANGUAGE,
+    mode: str = DEFAULT_MODE,
+    greeting: bool = False,
+) -> List[Message]:
+    """Conversation with the system prompt for ``language``/``mode`` at index 0.
+
+    In call mode ``greeting=True`` with no messages inserts a synthetic user
+    turn so the assistant can open the call without the client inventing text.
+    """
+    code = normalize_language(language)
+    conversation = normalize_mode(mode)
+
+    if raw:
+        messages = normalize_messages(raw)
+    else:
+        messages = []
+
+    if greeting and conversation == "call" and not messages:
+        messages = [{"role": "user", "content": GREETING_TURNS[code]}]
+
+    if not messages:
+        raise ValueError("`messages` must be a non-empty list.")
+
+    system = system_prompt(code, conversation)
+    return [{"role": "system", "content": system}] + messages
 
 
 def error_body(exc: TokenHarborError) -> Dict[str, Any]:
@@ -335,6 +402,12 @@ def register_page():
 def chat():
     """The chat shell. It holds no data; the browser fetches it with a bearer token."""
     return render_template("chat.html")
+
+
+@app.get("/call")
+def call_page():
+    """Voice-call shell. It holds no data; the browser uses its bearer token."""
+    return render_template("call.html")
 
 
 @app.get("/settings")
@@ -430,8 +503,10 @@ def api_chat():
     """Non-streaming completion: returns ``{"reply": "..."}``."""
     data = request.get_json(silent=True) or {}
     language = normalize_language(data.get("language"))
+    mode = normalize_mode(data.get("mode"))
+    greeting = bool(data.get("greeting"))
     try:
-        payload = build_payload(data.get("messages"), language)
+        payload = build_payload(data.get("messages"), language, mode, greeting)
     except ValueError as exc:
         return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
 
@@ -447,13 +522,17 @@ def api_chat():
             "event": "chat.request",
             "model": model_name(),
             "language": language,
+            "mode": mode,
             "streaming": False,
             "message_count": max(0, len(payload) - 1),
         },
     )
     tools, handlers = memory_toolset()
+    call_params = {"max_tokens": CALL_MAX_TOKENS} if mode == "call" else {}
     try:
-        reply = client.run_tools(messages=payload, tools=tools, handlers=handlers)
+        reply = client.run_tools(
+            messages=payload, tools=tools, handlers=handlers, **call_params
+        )
     except TokenHarborError as exc:
         logger.error(
             "chat.error",
@@ -487,8 +566,10 @@ def api_chat_stream():
     """Streamed completion over Server-Sent Events."""
     data = request.get_json(silent=True) or {}
     language = normalize_language(data.get("language"))
+    mode = normalize_mode(data.get("mode"))
+    greeting = bool(data.get("greeting"))
     try:
-        payload = build_payload(data.get("messages"), language)
+        payload = build_payload(data.get("messages"), language, mode, greeting)
     except ValueError as exc:
         return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
 
@@ -503,6 +584,7 @@ def api_chat_stream():
             "event": "chat.request",
             "model": model_name(),
             "language": language,
+            "mode": mode,
             "streaming": True,
             "message_count": max(0, len(payload) - 1),
         },
@@ -525,12 +607,14 @@ def api_chat_stream():
         error_code: Optional[str] = None
         finish_reason: Optional[str] = None
         stopped = False
+        call_params = {"max_tokens": CALL_MAX_TOKENS} if mode == "call" else {}
         events = client.run_tools_events(
             messages=payload,
             tools=tools,
             handlers=handlers,
             cancel=cancel,
             on_open=on_open,
+            **call_params,
         )
         try:
             for event in events:
@@ -663,6 +747,92 @@ def api_chat_stop():
             400,
         )
     return jsonify({"stopped": stop_stream(claims.get("id"), stream_id.strip())})
+
+
+# --- voice API ------------------------------------------------------------
+
+
+@app.get("/api/voice/status")
+def api_voice_status():
+    """Whether voice generation is configured, plus the token expiry."""
+    return jsonify(voice.status())
+
+
+@app.post("/api/voice/speak")
+def api_voice_speak():
+    """Generate spoken audio for one assistant sentence."""
+    claims = auth.current_user() or {}
+    data = request.get_json(silent=True) or {}
+    language = normalize_language(data.get("language"))
+    raw_text = data.get("text")
+    text_chars = len(raw_text) if isinstance(raw_text, str) else 0
+    started = time.perf_counter()
+
+    logger.info(
+        "voice.request",
+        extra={
+            "event": "voice.request",
+            "user_id": claims.get("id"),
+            "language": language,
+            "text_chars": text_chars,
+        },
+    )
+    try:
+        audio = voice.synthesize(raw_text, language=language, voice_name=data.get("voice"))
+    except voice.VoiceError as exc:
+        logger.warning(
+            "voice.error",
+            extra={
+                "event": "voice.error",
+                "user_id": claims.get("id"),
+                "language": language,
+                "text_chars": text_chars,
+                "error_code": exc.code,
+                "error_type": type(exc).__name__,
+                "duration_ms": elapsed_ms(started),
+                "outcome": "error",
+            },
+        )
+        return jsonify({"error": {"code": exc.code, "message": exc.message}}), exc.status
+    except Exception as exc:
+        logger.exception(
+            "voice.error",
+            extra={
+                "event": "voice.error",
+                "user_id": claims.get("id"),
+                "language": language,
+                "text_chars": text_chars,
+                "error_code": "voice_upstream_error",
+                "error_type": type(exc).__name__,
+                "duration_ms": elapsed_ms(started),
+                "outcome": "error",
+            },
+        )
+        return (
+            jsonify(
+                {
+                    "error": {
+                        "code": "voice_upstream_error",
+                        "message": "Voice generation failed.",
+                    }
+                }
+            ),
+            502,
+        )
+
+    logger.info(
+        "voice.done",
+        extra={
+            "event": "voice.done",
+            "user_id": claims.get("id"),
+            "language": language,
+            "text_chars": text_chars,
+            "bytes": len(audio),
+            "duration_ms": elapsed_ms(started),
+            "outcome": "ok",
+        },
+    )
+    return Response(audio, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
 
 
 if __name__ == "__main__":

@@ -15,6 +15,8 @@ behavior changes. This file covers workflow and non-obvious wiring.
   `init_app(app)`.
 - `memory.py` — personal-memory schema, entity/relationship/fact CRUD, and the
   `save_memory` / `recall_memory` agent tool schemas and handlers.
+- `voice.py` — ElevenLabs web-request client for call mode: session token
+  expiry, payload/chunking, MP3 synthesis, and redacted logging.
 - `logging_config.py` — readable text logging by default, JSON option, request
   IDs, request/user correlation, and rotating-file output.
 - `templates/` + `static/` — no build step. Tailwind and fonts load from CDNs,
@@ -93,12 +95,36 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - `logging_config.init_request_logging(app)` must be registered before
   `auth.init_app(app)` so requests rejected by auth still produce request logs.
   `LOG_FILE=""` disables the rotating file; default is `instance/app.log`.
+- `voice.py` replays the elevenlabs.io web request with a session token
+  (`ELEVENLABS_TOKEN`), so it expires about hourly and has no `xi-api-key` path.
+  `GET /api/voice/status` must keep reporting expiry without exposing the token;
+  `/call` shows the banner when voice is down and callers can still type.
+- Voice routes are authenticated (`GET /api/voice/status`,
+  `POST /api/voice/speak`); only `/call` is a public shell. Never log voice
+  text, tokens, voice ids, or audio. `voice.speak` logs only `text_chars`,
+  `chunks`, `duration_ms`, and `outcome`.
+- The call client streams through the existing `/api/chat/stream` with
+  `mode: "call"` and synthesises whole text segments, never sentences. A
+  `tool_start` frame flushes the pre-tool text so it plays while the tool runs;
+  the text after the last tool call is flushed when the reply completes. Tool
+  status frames are not spoken. Hang-up must abort the stream, stop recognition
+  and audio, and call `/api/chat/stop` with the `X-Stream-ID`.
+- Release the SSE `ReadableStreamDefaultReader` and defer the final tail
+  segment by a tick after the stream ends. Firing it in the stream's completion
+  microtask can reuse the closing HTTP connection and hang until the 30s fetch
+  timeout. Tool-boundary segments are sent during the stream, so they are not
+  affected by this deferral.
+- `static/call.js` unlocks playback with a silent clip inside the Start-call
+  gesture and calls `pauseRecognition()` while audio plays. Without that, the
+  microphone hears SAGE's own voice, the barge-in handler stops playback, and
+  the user sees text with no sound. `/chat` must link to `/call` (the voice UI
+  only exists there).
 - All routes are guarded by the auth middleware except `PUBLIC_PATHS` and
   `PUBLIC_PREFIXES` in `auth.py`. Add new public routes there; API paths get a
   JSON 401, page paths redirect to `/login`.
-- `/chat` and `/settings` are intentionally public, data-free HTML shells;
-  authentication and user data come from `/api/auth/me`, and every write goes
-  through the guarded API (`PATCH /api/auth/profile`, `POST /api/auth/password`).
+- `/chat`, `/call`, and `/settings` are intentionally public, data-free HTML
+  shells; authentication and user data come from `/api/auth/me`, and every write
+  goes through the guarded API (`PATCH /api/auth/profile`, `POST /api/auth/password`).
 - Profile updates reissue the JWT because `full_name`/`email` live in the claims;
   the client must `Session.save(...)` the returned token. Changing the email
   requires `current_password`, and both update paths use `auth.AuthError` codes.
@@ -109,10 +135,18 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - Adding a language requires coordinated edits to `LANGUAGE_FILES`,
   `LANGUAGE_ALIASES`, and `LANGUAGE_DIRECTIVES` in `app.py`, plus `STRINGS` and
   `LANG_ALIASES` in `static/chat.js`. `TH_SYSTEM_PROMPT` overrides all languages.
-- Both prompt files contain a “Memory Tool Protocol” naming `save_memory`,
+- Both chat prompt files contain a “Memory Tool Protocol” naming `save_memory`,
   `recall_memory`, and `get_name`; keep those names in sync with `memory.py`,
   the generated `prompt_brief()`, and the `STRINGS.tool*` labels in
   `static/chat.js`.
+- Call mode is selected by `PROMPT_MODES["call"]` in `app.py` and uses
+  `prompts/english-call.md` / `prompts/arabic-call.md`; a missing call file
+  falls back to the chat persona. Call turns are capped by `CALL_MAX_TOKENS`,
+  and `greeting: true` with no messages inserts `GREETING_TURNS` server-side.
+- `voice.prompt_brief()` (a delivery-tag cheat sheet from ElevenApi `TAGS.md`)
+  is appended to call-mode system prompts, including under `TH_SYSTEM_PROMPT`.
+  Keep it in sync with `voice.py` and `tests/test_voice.py` when the tag list
+  changes; `tests/test_app.py` asserts it appears in call mode and not in chat.
 - `memory.prompt_brief()` is generated from the schema constants and appended to
   every system prompt by `app.system_prompt()`, including when
   `TH_SYSTEM_PROMPT` overrides the persona. Add or rename a tool field in the
