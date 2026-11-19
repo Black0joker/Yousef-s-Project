@@ -158,6 +158,7 @@ class TestPages(AppTestCase):
         self.assertIn(b"location.js", response.data)
         self.assertIn(b"schedule-reminder.js", response.data)
         self.assertIn(b'id="schedule-reminder"', response.data)
+        self.assertIn(b'id="place-context"', response.data)
         self.assertIn(b'href="/call"', response.data)
         self.assertIn(b'href="/memory"', response.data)
         self.assertIn(b'href="/schedule"', response.data)
@@ -1338,6 +1339,7 @@ class TestLocationConsent(AppTestCase):
         self.assertIn(b"session.js", response.data)
         self.assertIn(b'id="today-list"', response.data)
         self.assertIn(b'id="routine-list"', response.data)
+        self.assertIn(b'id="place-list"', response.data)
 
     def test_schedule_page_requires_no_token(self):
         # a public shell, like /chat and /memory
@@ -1488,6 +1490,122 @@ class TestScheduleApi(AppTestCase):
         names = {schema["function"]["name"] for schema in fake.tools}
         self.assertLessEqual(
             {"save_appointment", "list_appointments", "complete_appointment"}, names
+        )
+
+
+class TestPlacesApi(AppTestCase):
+    """Familiar places and the location context payload."""
+
+    HOME = (30.0444, 31.2357)
+
+    def create_place(self, **overrides):
+        payload = {
+            "name": "Home",
+            "latitude": self.HOME[0],
+            "longitude": self.HOME[1],
+            "radius_m": 200,
+        }
+        payload.update(overrides)
+        return self.http.post("/api/places", json=payload, headers=self.headers)
+
+    def test_create_and_list(self):
+        created = self.create_place()
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.get_json()["name"], "Home")
+
+        listing = self.http.get("/api/places", headers=self.headers).get_json()
+        self.assertEqual([item["name"] for item in listing["places"]], ["Home"])
+
+    def test_create_rejects_bad_coordinates(self):
+        self.assertEqual(self.create_place(latitude=91).status_code, 400)
+        self.assertEqual(self.create_place(longitude="east").status_code, 400)
+        self.assertEqual(self.create_place(name="").status_code, 400)
+
+    def test_delete(self):
+        created = self.create_place().get_json()
+        response = self.http.delete(f"/api/places/{created['id']}", headers=self.headers)
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(
+            self.http.get("/api/places", headers=self.headers).get_json()["places"], []
+        )
+
+    def test_delete_unknown_is_404(self):
+        response = self.http.delete("/api/places/nope", headers=self.headers)
+        self.assertEqual(response.status_code, 404)
+
+    def test_places_are_scoped_to_the_caller(self):
+        created = self.create_place().get_json()
+
+        other = dict(CREDENTIALS)
+        other["email"] = "places@example.com"
+        token = self.http.post("/api/auth/register", json=other).get_json()["token"]
+        other_headers = {"Authorization": "Bearer " + token}
+
+        self.assertEqual(
+            self.http.get("/api/places", headers=other_headers).get_json()["places"], []
+        )
+        self.assertEqual(
+            self.http.delete(f"/api/places/{created['id']}", headers=other_headers).status_code,
+            404,
+        )
+
+    def test_ping_returns_no_body_at_an_unfamiliar_place(self):
+        response = self.http.post(
+            "/api/location",
+            json={"latitude": 0.0, "longitude": 0.0},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 204)
+
+    def test_ping_returns_context_at_a_saved_place(self):
+        self.create_place()
+        response = self.http.post(
+            "/api/location",
+            json={"latitude": self.HOME[0], "longitude": self.HOME[1]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        context = response.get_json()["context"]
+        self.assertEqual(context["place"]["name"], "Home")
+        # the payload must not echo coordinates back
+        self.assertNotIn("latitude", context["place"])
+        self.assertNotIn("longitude", context["place"])
+
+    def test_context_endpoint_returns_a_place(self):
+        self.create_place()
+        response = self.http.get(
+            f"/api/location/context?latitude={self.HOME[0]}&longitude={self.HOME[1]}",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["context"]["place"]["name"], "Home")
+
+    def test_context_endpoint_is_null_for_an_unfamiliar_place(self):
+        response = self.http.get(
+            "/api/location/context?latitude=0&longitude=0", headers=self.headers
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.get_json()["context"])
+
+    def test_context_endpoint_requires_location_consent(self):
+        self.http.put("/api/consents/location", json={"granted": False}, headers=self.headers)
+        response = self.http.get(
+            "/api/location/context?latitude=0&longitude=0", headers=self.headers
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["error"]["code"], "consent_required")
+
+    def test_context_endpoint_validates_coordinates(self):
+        response = self.http.get(
+            "/api/location/context?latitude=999&longitude=0", headers=self.headers
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_places_api_requires_auth(self):
+        self.assertEqual(self.http.get("/api/places").status_code, 401)
+        self.assertEqual(self.http.post("/api/places", json={}).status_code, 401)
+        self.assertEqual(
+            self.http.get("/api/location/context?latitude=0&longitude=0").status_code, 401
         )
 
 

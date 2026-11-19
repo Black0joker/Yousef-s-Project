@@ -21,6 +21,9 @@ behavior changes. This file covers workflow and non-obvious wiring.
 - `schedule.py` — appointments, tasks, and routines: schema, UTC-normalized
   timestamps, the `today` window, and the `save_appointment` /
   `list_appointments` / `complete_appointment` tool schemas and handlers.
+- `places.py` — familiar places and location context: named radius circles,
+  server-side haversine matching, and the context payload (place, matching
+  memories, next appointment). Never logs or returns coordinates.
 - `voice.py` — ElevenLabs web-request client for call mode: session token
   expiry, payload/chunking, MP3 synthesis, and redacted logging.
 - `logging_config.py` — readable text logging by default, JSON option, request
@@ -174,6 +177,30 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   `memory._execute`, and the schedule logs carry counts and flags only.
 - `tests/test_app.py::TestMemoryTools` pins the exact tool-name list offered to
   the model. Adding a tool means updating that assertion.
+
+### Places and location context
+
+- `app.py` initialises five stores: `auth` → `memory` → `conversations` →
+  `schedule` → `places`. Place tables belong in `places.SCHEMA_SQL`.
+- Matching is server-side on purpose. Never return a place's
+  `latitude`/`longitude` to the client: `_place_dict(..., include_coordinates=False)`
+  is what `find_place()` uses. `tests/test_places.py` asserts the payload has no
+  coordinates.
+- An **unfamiliar location must stay neutral**. `context_at()` returns `None`,
+  the route answers `204`, and nothing is logged beyond `has_place=False`. Do
+  not add a "you seem lost" branch — the requirements forbid inferring danger
+  or confusion from an unfamiliar place.
+- `POST /api/location` returns `204` with no body or `200 {"context": ...}`;
+  `static/location.js` branches on the status. Context failures are swallowed
+  and logged as `location.context.failed`, because a broken context must not
+  break the ping.
+- `GET /api/location/context` reads `latitude`/`longitude` from the **query
+  string**, so they arrive as text. Use `_query_float()` before
+  `clean_coordinate()`, or every valid request is a 400.
+- Places reuse memory by name: a place called "Mom's house" surfaces the facts
+  of the entity with that name. There is no separate place-memory table.
+- Coordinates are personal data and never appear in logs, in `/api/auth/me`, or
+  in the context payload.
 
 ### Logging
 
@@ -330,6 +357,7 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - `static/location.js` is loaded by `/chat` and `/call` only, after
   `session.js`. It pings `/api/location` every 5s, skips a tick while a request
   is in flight, pauses on `visibilitychange`, and stops permanently on
-  `PERMISSION_DENIED`. Geolocation needs a secure context: `127.0.0.1` /
-  `localhost` work, a plain-HTTP LAN IP does not.
+  `PERMISSION_DENIED`. A `200` response carries place context, which it renders
+  into `#place-context`; a `204` hides that banner. Geolocation needs a secure
+  context: `127.0.0.1` / `localhost` work, a plain-HTTP LAN IP does not.
 - `static/welcome.js` is unreferenced leftover code; `/` redirects to `/login`.

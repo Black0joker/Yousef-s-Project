@@ -23,6 +23,16 @@
       routinesTitle: "Routines",
       routinesHint: "Repeating parts of your day.",
       routinesEmpty: "No routines yet.",
+      placesTitle: "Familiar places",
+      placesHint: "Save where you are now, and SAGE can show what you noted about it.",
+      placesEmpty: "No saved places yet.",
+      placeNameLabel: "Place name",
+      radiusLabel: "Radius (metres)",
+      saveHere: "Save my current place",
+      placeSaved: "Place saved.",
+      confirmRemovePlace: "Remove this place?",
+      locationOff: "Location is turned off in permissions.",
+      locationDenied: "Your browser did not allow location access.",
       done: "Mark done",
       remove: "Remove",
       confirmRemove: "Remove this appointment?",
@@ -45,6 +55,16 @@
       routinesTitle: "الروتين",
       routinesHint: "أجزاء متكررة من يومك.",
       routinesEmpty: "لا يوجد روتين بعد.",
+      placesTitle: "أماكن مألوفة",
+      placesHint: "احفظ مكانك الحالي، ويستطيع SAGE أن يعرض ما دوّنته عنه.",
+      placesEmpty: "لا توجد أماكن محفوظة بعد.",
+      placeNameLabel: "اسم المكان",
+      radiusLabel: "النطاق (بالمتر)",
+      saveHere: "احفظ مكاني الحالي",
+      placeSaved: "تم حفظ المكان.",
+      confirmRemovePlace: "حذف هذا المكان؟",
+      locationOff: "الموقع متوقف في الأذونات.",
+      locationDenied: "لم يسمح متصفحك بالوصول إلى الموقع.",
       done: "تم",
       remove: "حذف",
       confirmRemove: "حذف هذا الموعد؟",
@@ -74,6 +94,9 @@
   var upcomingEmpty = document.getElementById("upcoming-empty");
   var routineList = document.getElementById("routine-list");
   var routinesEmpty = document.getElementById("routines-empty");
+  var placeList = document.getElementById("place-list");
+  var placesEmpty = document.getElementById("places-empty");
+  var placeForm = document.getElementById("place-form");
   var form = document.getElementById("appointment-form");
 
   function showError(message) {
@@ -263,9 +286,11 @@
   }
 
   function loadAll() {
-    return Promise.all([loadToday(), loadUpcoming(), loadRoutines()]).catch(function (err) {
-      showError(err.message || str().loadFailed);
-    });
+    return Promise.all([loadToday(), loadUpcoming(), loadRoutines(), loadPlaces()]).catch(
+      function (err) {
+        showError(err.message || str().loadFailed);
+      }
+    );
   }
 
   if (form) {
@@ -296,6 +321,94 @@
         .catch(function (err) {
           showError(err.message || str().genericError);
         });
+    });
+  }
+
+  function loadPlaces() {
+    return Session.authFetch("/api/places")
+      .then(function (response) {
+        if (!response.ok) throw new Error(str().loadFailed);
+        return response.json();
+      })
+      .then(function (data) {
+        var items = data.places || [];
+        placeList.textContent = "";
+        items.forEach(function (place) {
+          var row = el(
+            "li",
+            "flex items-center justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
+          );
+          var body = el("div", "min-w-0");
+          body.appendChild(
+            el("p", "truncate text-sm text-brand-900 dark:text-sand-100", place.name)
+          );
+          body.appendChild(
+            el(
+              "p",
+              "mt-0.5 text-xs text-brand-500 dark:text-sand-400",
+              place.radius_m + " m" + (place.notes ? " · " + place.notes : "")
+            )
+          );
+          row.appendChild(body);
+          row.appendChild(
+            actionButton(
+              str().remove,
+              function () {
+                if (!window.confirm(str().confirmRemovePlace)) return;
+                remove("/api/places/" + encodeURIComponent(place.id), loadAll);
+              },
+              true
+            )
+          );
+          placeList.appendChild(row);
+        });
+        placesEmpty.classList.toggle("hidden", items.length > 0);
+      });
+  }
+
+  if (placeForm) {
+    placeForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      clearError();
+
+      var name = document.getElementById("place_name").value.trim();
+      var radius = Number(document.getElementById("place_radius").value) || 150;
+      if (!name) {
+        showError(str().required);
+        return;
+      }
+      if (!navigator.geolocation) {
+        showError(str().locationDenied);
+        return;
+      }
+
+      // The browser supplies the position; the model never invents one.
+      navigator.geolocation.getCurrentPosition(
+        function (position) {
+          Session.authFetch("/api/places", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: name,
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+              radius_m: radius,
+            }),
+          })
+            .then(function (response) {
+              if (!response.ok) throw new Error(str().genericError);
+              placeForm.reset();
+              document.getElementById("place_radius").value = "150";
+              return loadAll();
+            })
+            .catch(function (err) {
+              showError(err.message || str().genericError);
+            });
+        },
+        function () {
+          showError(str().locationDenied);
+        }
+      );
     });
   }
 

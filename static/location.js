@@ -16,6 +16,42 @@
   var inFlight = false;
   var denied = false;
 
+  var STRINGS = {
+    en: { at: "You are at", next: "Next", off: "Location is off in permissions." },
+    ar: { at: "أنت في", next: "التالي", off: "الموقع متوقف في الأذونات." },
+  };
+
+  var lang = "en";
+  try {
+    lang = localStorage.getItem("th_language") === "ar" ? "ar" : "en";
+  } catch (err) {
+    /* storage blocked */
+  }
+  var str = STRINGS[lang] || STRINGS.en;
+
+  var banner = document.getElementById("place-context");
+  var bannerText = document.getElementById("place-context-text");
+
+  function showContext(context) {
+    if (!banner || !bannerText) return;
+    if (!context || !context.place) {
+      banner.classList.add("hidden");
+      return;
+    }
+    var parts = [str.at + " " + context.place.name];
+    if (context.appointment) {
+      var when = new Date(context.appointment.starts_at);
+      if (!isNaN(when.getTime())) {
+        parts.push(
+          str.next + ": " + context.appointment.title + " " +
+            when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+        );
+      }
+    }
+    bannerText.textContent = parts.join(" · ");
+    banner.classList.remove("hidden");
+  }
+
   function send(position) {
     if (inFlight) return; // a slow request must not pile up behind itself
     inFlight = true;
@@ -27,6 +63,14 @@
         longitude: position.coords.longitude,
       }),
     })
+      .then(function (response) {
+        // 204 means "stored, no familiar place"; a 200 carries context
+        if (response.status === 200) return response.json();
+        return null;
+      })
+      .then(function (data) {
+        showContext(data && data.context);
+      })
       .catch(function () {
         /* transient failures are retried on the next tick */
       })

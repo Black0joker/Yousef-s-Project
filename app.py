@@ -33,6 +33,7 @@ import auth
 import conversations
 import logging_config
 import memory
+import places
 import schedule
 import voice
 from core import Message, TokenHarbor, TokenHarborError
@@ -116,6 +117,7 @@ auth.init_db()
 memory.init_db()
 conversations.init_db()
 schedule.init_db()
+places.init_db()
 auth.init_app(app)
 
 
@@ -432,6 +434,20 @@ def clean_coordinate(value: Any, limit: float) -> float:
     if not -limit <= number <= limit:
         raise ValueError(f"Coordinate must be between -{limit:g} and {limit:g}.")
     return number
+
+
+def _query_float(value: Any) -> Any:
+    """Parse a numeric query-string value; leave anything else for validation.
+
+    Query parameters always arrive as strings, so ``clean_coordinate`` would
+    reject a perfectly valid ``?latitude=30.04`` without this.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
 
 
 # --- pages ----------------------------------------------------------------
@@ -1199,6 +1215,71 @@ def api_delete_routine(routine_id: str):
     return "", 204
 
 
+# --- places API -----------------------------------------------------------
+
+
+@app.get("/api/places")
+def api_places():
+    """The caller's saved places."""
+    claims = auth.current_user() or {}
+    return jsonify({"places": places.list_places(claims.get("id"))})
+
+
+@app.post("/api/places")
+def api_create_place():
+    """Save the caller's current position as a named place."""
+    claims = auth.current_user() or {}
+    data = request.get_json(silent=True) or {}
+    try:
+        place = places.save_place(
+            claims.get("id"),
+            data.get("name"),
+            data.get("latitude"),
+            data.get("longitude"),
+            radius_m=data.get("radius_m"),
+            notes=data.get("notes"),
+        )
+    except memory.MemoryError as exc:
+        return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
+    return jsonify(place), 201
+
+
+@app.delete("/api/places/<place_id>")
+def api_delete_place(place_id: str):
+    claims = auth.current_user() or {}
+    if not places.delete_place(claims.get("id"), place_id):
+        return jsonify({"error": {"code": "not_found", "message": "Place not found."}}), 404
+    return "", 204
+
+
+@app.get("/api/location/context")
+def api_location_context():
+    """Context for a position without storing it.
+
+    The `/chat` page calls this after a ping so it can show "you are at X"
+    without waiting for the ping itself to return a body.
+    """
+    claims = auth.current_user() or {}
+    if not memory.get_consent(claims.get("id"), "location"):
+        return (
+            jsonify(
+                {
+                    "error": {
+                        "code": "consent_required",
+                        "message": "Location sharing is turned off in settings.",
+                    }
+                }
+            ),
+            403,
+        )
+    try:
+        latitude = clean_coordinate(_query_float(request.args.get("latitude")), 90.0)
+        longitude = clean_coordinate(_query_float(request.args.get("longitude")), 180.0)
+    except ValueError as exc:
+        return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
+    return jsonify({"context": places.context_at(claims.get("id"), latitude, longitude)})
+
+
 # --- location API ---------------------------------------------------------
 
 
@@ -1256,16 +1337,35 @@ def api_location():
             401,
         )
 
+    # Turn the ping into something useful: a familiar place, its memories, and
+    # the next appointment. An unfamiliar position yields no context at all —
+    # never a warning, and never an inference about the user's state.
+    context = None
+    try:
+        context = places.context_at(claims.get("id"), latitude, longitude)
+    except Exception:  # context is a bonus; never fail the ping over it
+        logger.warning(
+            "location.context.failed",
+            extra={
+                "event": "location.context.failed",
+                "user_id": claims.get("id"),
+                "outcome": "error",
+            },
+        )
+
     logger.info(
         "location.update",
         extra={
             "event": "location.update",
             "user_id": claims.get("id"),
+            "has_place": bool(context and context.get("place")),
             "duration_ms": elapsed_ms(started),
             "outcome": "ok",
         },
     )
-    return "", 204
+    if context is None:
+        return "", 204
+    return jsonify({"context": context})
 
 
 if __name__ == "__main__":

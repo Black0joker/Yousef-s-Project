@@ -214,6 +214,33 @@ today (`static/schedule-reminder.js`). There is no push or email delivery.
 should go to `save_appointment`, not `save_memory`. Tool handlers bind the user
 id server-side and drop any model-supplied `user_id`.
 
+## Familiar places and location context
+
+Location pings used to be write-only. `places.py` turns a position into
+something useful.
+
+- A **place** is a named circle: `name`, `latitude`, `longitude`, `radius_m`
+  (10–50,000 m, default 150), and optional `notes`. The user saves one from
+  their current position on `/schedule`, so the browser supplies the
+  coordinates rather than the model.
+- Matching runs **on the server** with a haversine distance. The nearest place
+  whose radius contains the point wins; ties break on distance.
+- `POST /api/location` now returns `204` when the position matches nothing, and
+  `200 {"context": ...}` when it matches a place. The context carries the
+  place, the facts of any entity with the same name, and the next appointment.
+- `GET /api/location/context?latitude=…&longitude=…` returns the same payload
+  without storing the position, and requires the `location` consent.
+- `/chat` shows a banner (“You are at Mom's house · Next: Call her”) from
+  `static/location.js`.
+
+**Privacy.** The context payload never includes `latitude`/`longitude`: the
+browser already knows where it is, and echoing a saved place's coordinates back
+would leak the user's own data for no benefit. Coordinates are never logged.
+
+**An unfamiliar place is neutral.** It produces no context, no warning, and no
+inference about the user's state. The requirement is explicit that being
+somewhere new must not be treated as confusion or danger.
+
 ## Accounts & authentication
 
 Accounts live in a small SQLite database (`instance/app.db`, override with
@@ -261,6 +288,10 @@ Logging in returns a **JWT** (HS256, 7 days) that the browser keeps in
 | `GET` | `/api/routines` | – | `200 {routines}` |
 | `POST` | `/api/routines` | `label, cadence, window` | `201 {routine}` |
 | `DELETE` | `/api/routines/<id>` | – | `204` / `404` |
+| `GET` | `/api/places` | – | `200 {places}` |
+| `POST` | `/api/places` | `name, latitude, longitude, radius_m` | `201 {place}` |
+| `DELETE` | `/api/places/<id>` | – | `204` / `404` |
+| `GET` | `/api/location/context` | `latitude, longitude` | `200 {context}` / `null` |
 
 \* `tz_offset` is minutes **east** of UTC, i.e. `-new Date().getTimezoneOffset()`.
 

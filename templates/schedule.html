@@ -137,6 +137,34 @@
         <ul id="routine-list" class="space-y-2"></ul>
       </section>
 
+      <!-- Places -->
+      <section class="rounded-2xl border border-sand-200 bg-white p-5 sm:p-6 dark:border-white/5 dark:bg-[#1a2320]">
+        <div class="mb-4">
+          <h2 class="font-heading text-lg font-bold text-brand-950 dark:text-white" data-i18n="placesTitle">Familiar places</h2>
+          <p class="mt-1 text-sm text-brand-600 dark:text-sand-400" data-i18n="placesHint">
+            Save where you are now, and SAGE can show what you noted about it.
+          </p>
+        </div>
+        <p id="places-empty" class="hidden py-4 text-center text-sm text-brand-500 dark:text-sand-400" data-i18n="placesEmpty">
+          No saved places yet.
+        </p>
+        <ul id="place-list" class="space-y-2"></ul>
+
+        <form id="place-form" class="mt-5 space-y-3 border-t border-sand-200 pt-5 dark:border-white/10" novalidate>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label for="place_name" class="field-label" data-i18n="placeNameLabel">Place name</label>
+              <input type="text" id="place_name" name="place_name" maxlength="200" required class="field-input">
+            </div>
+            <div>
+              <label for="place_radius" class="field-label" data-i18n="radiusLabel">Radius (metres)</label>
+              <input type="number" id="place_radius" name="place_radius" min="10" max="50000" value="150" class="field-input">
+            </div>
+          </div>
+          <button type="submit" class="btn-primary sm:w-auto sm:px-6" data-i18n="saveHere">Save my current place</button>
+        </form>
+      </section>
+
     </main>
   </div>
 
