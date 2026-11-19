@@ -71,10 +71,23 @@ class ControlTestCase(unittest.TestCase):
 
     # -- consent -----------------------------------------------------------
 
-    def test_consent_defaults_to_not_granted(self):
+    def test_consent_defaults_to_not_granted_except_location(self):
         for kind in sorted(memory.CONSENT_KINDS):
             with self.subTest(kind=kind):
-                self.assertFalse(memory.get_consent(self.user_a, kind, connection=self.conn))
+                expected = kind in memory.DEFAULT_GRANTED_CONSENTS
+                self.assertEqual(
+                    memory.get_consent(self.user_a, kind, connection=self.conn), expected
+                )
+
+    def test_location_is_granted_by_default(self):
+        self.assertTrue(memory.get_consent(self.user_a, "location", connection=self.conn))
+
+    def test_revoking_a_default_on_consent_sticks(self):
+        memory.set_consent(self.user_a, "location", False, connection=self.conn)
+        self.assertFalse(memory.get_consent(self.user_a, "location", connection=self.conn))
+        # and it can be granted again
+        memory.set_consent(self.user_a, "location", True, connection=self.conn)
+        self.assertTrue(memory.get_consent(self.user_a, "location", connection=self.conn))
 
     def test_granting_and_revoking_a_consent(self):
         granted = memory.set_consent(self.user_a, "location", True, connection=self.conn)
@@ -95,15 +108,20 @@ class ControlTestCase(unittest.TestCase):
         self.assertIsNotNone(row["revoked_at"])
 
     def test_consent_is_scoped_per_user(self):
-        memory.set_consent(self.user_a, "location", True, connection=self.conn)
-        self.assertFalse(memory.get_consent(self.user_b, "location", connection=self.conn))
+        # revoking for A must not affect B's default-on state
+        memory.set_consent(self.user_a, "location", False, connection=self.conn)
+        self.assertFalse(memory.get_consent(self.user_a, "location", connection=self.conn))
+        self.assertTrue(memory.get_consent(self.user_b, "location", connection=self.conn))
 
     def test_list_consents_reports_every_kind(self):
         memory.set_consent(self.user_a, "voice", True, connection=self.conn)
         listing = memory.list_consents(self.user_a, connection=self.conn)
         self.assertEqual(set(listing), set(memory.CONSENT_KINDS))
         self.assertTrue(listing["voice"]["granted"])
-        self.assertFalse(listing["location"]["granted"])
+        # location: granted by default, and not an explicit grant
+        self.assertTrue(listing["location"]["granted"])
+        self.assertTrue(listing["location"]["default"])
+        self.assertIsNone(listing["location"]["granted_at"])
 
     def test_unknown_consent_kind_is_rejected(self):
         with self.assertRaises(memory.MemoryError):

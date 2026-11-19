@@ -1252,16 +1252,18 @@ class TestMemoryControlApi(AppTestCase):
     def test_consents_start_off_and_can_be_toggled(self):
         body = self.http.get("/api/consents", headers=self.headers).get_json()
         self.assertEqual(set(body["consents"]), set(memory.CONSENT_KINDS))
-        self.assertFalse(body["consents"]["location"]["granted"])
+        self.assertFalse(body["consents"]["voice"]["granted"])
+        # location is on by default
+        self.assertTrue(body["consents"]["location"]["granted"])
 
         response = self.http.put(
-            "/api/consents/location", json={"granted": True}, headers=self.headers
+            "/api/consents/voice", json={"granted": True}, headers=self.headers
         )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["granted"])
 
         again = self.http.get("/api/consents", headers=self.headers).get_json()
-        self.assertTrue(again["consents"]["location"]["granted"])
+        self.assertTrue(again["consents"]["voice"]["granted"])
 
     def test_consent_requires_a_boolean(self):
         response = self.http.put(
@@ -1286,34 +1288,31 @@ class TestMemoryControlApi(AppTestCase):
 
 
 class TestLocationConsent(AppTestCase):
-    """Storing a position now requires the location consent."""
+    """Location is granted by default, but a revoke must stick."""
 
-    def test_location_is_refused_without_consent(self):
+    def test_location_is_stored_without_an_explicit_grant(self):
+        response = self.http.post(
+            "/api/location", json={"latitude": 1.0, "longitude": 2.0}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 204)
+
+    def test_location_is_refused_after_revoking_consent(self):
+        self.http.put("/api/consents/location", json={"granted": False}, headers=self.headers)
         response = self.http.post(
             "/api/location", json={"latitude": 1.0, "longitude": 2.0}, headers=self.headers
         )
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.get_json()["error"]["code"], "consent_required")
 
-    def test_location_is_stored_after_granting_consent(self):
+    def test_location_is_stored_again_after_re_granting(self):
+        self.http.put("/api/consents/location", json={"granted": False}, headers=self.headers)
         self.http.put("/api/consents/location", json={"granted": True}, headers=self.headers)
         response = self.http.post(
             "/api/location", json={"latitude": 1.0, "longitude": 2.0}, headers=self.headers
         )
         self.assertEqual(response.status_code, 204)
 
-    def test_revoking_consent_stops_storage_again(self):
-        self.http.put("/api/consents/location", json={"granted": True}, headers=self.headers)
-        self.http.post(
-            "/api/location", json={"latitude": 1.0, "longitude": 2.0}, headers=self.headers
-        )
-        self.http.put("/api/consents/location", json={"granted": False}, headers=self.headers)
-        response = self.http.post(
-            "/api/location", json={"latitude": 5.0, "longitude": 6.0}, headers=self.headers
-        )
-        self.assertEqual(response.status_code, 403)
-
-    def test_invalid_coordinates_are_still_400_before_the_consent_check(self):
+    def test_invalid_coordinates_are_still_400(self):
         response = self.http.post(
             "/api/location", json={"latitude": 999, "longitude": 0}, headers=self.headers
         )

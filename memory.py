@@ -54,8 +54,13 @@ SELF_ENTITY_TYPE = "Person"
 SELF_ALIASES = frozenset({"current user", "me", "i", "myself", "self", "أنا", "المستخدم الحالي"})
 
 #: Consent kinds a feature must check before using a user's data. Every entry is
-#: a switch the user owns; a missing row means "not granted".
+#: a switch the user owns.
 CONSENT_KINDS = frozenset({"location", "voice", "memory_sharing", "familiar_voice"})
+
+#: Kinds that are granted until the user explicitly revokes them. Everything
+#: else requires an explicit opt-in. A revoke row always wins, so turning a
+#: default-on kind off sticks until the user turns it back on.
+DEFAULT_GRANTED_CONSENTS = frozenset({"location"})
 
 #: Predicates that hold at most one current value per entity. A person has one
 #: name, one birthday, one age at a time, so a newer statement supersedes the
@@ -988,12 +993,20 @@ def _consent_kind(value: Any) -> str:
     return kind
 
 
+def _default_granted(kind: str) -> bool:
+    return kind in DEFAULT_GRANTED_CONSENTS
+
+
 def get_consent(
     user_id: Any,
     kind: Any,
     connection: Optional[sqlite3.Connection] = None,
 ) -> bool:
-    """Whether ``user_id`` currently grants ``kind``. Missing row means no."""
+    """Whether ``user_id`` currently grants ``kind``.
+
+    A missing row falls back to :data:`DEFAULT_GRANTED_CONSENTS`; an explicit
+    revoke row always wins.
+    """
     key = _user_id(user_id)
     consent_kind = _consent_kind(kind)
     token = _current_user.set(key)
@@ -1008,7 +1021,9 @@ def get_consent(
                 (key, consent_kind),
                 operation="consent.get",
             ).fetchone()
-        return row is not None and row["revoked_at"] is None
+        if row is None:
+            return _default_granted(consent_kind)
+        return row["revoked_at"] is None
     finally:
         _current_user.reset(token)
 
@@ -1037,7 +1052,8 @@ def list_consents(
         row = stored.get(kind)
         result[kind] = {
             "kind": kind,
-            "granted": row is not None and row["revoked_at"] is None,
+            "granted": (row["revoked_at"] is None) if row is not None else _default_granted(kind),
+            "default": _default_granted(kind),
             "granted_at": row["granted_at"] if row else None,
             "revoked_at": row["revoked_at"] if row else None,
         }

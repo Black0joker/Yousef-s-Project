@@ -116,12 +116,14 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - `export_memory()` includes expired facts and consents, is generated on demand,
   and is never persisted — there is no second copy to secure.
 - `consents` rows are keyed `(user_id, kind)` with `CONSENT_KINDS` in
-  `memory.py`. A **missing row means not granted**; revoking keeps the row with
-  `revoked_at` for the audit trail. Consent is checked server-side in the route
-  (`memory.get_consent`), never read from the client. `POST /api/location`
-  answers `403 consent_required` without it, and `tests/test_app.py`
-  `TestLocationApi.setUp` grants it so the storage tests still exercise the
-  happy path.
+  `memory.py`. `DEFAULT_GRANTED_CONSENTS` holds the kinds that are on without a
+  row — currently `location` only; everything else requires an explicit opt-in.
+  A **revoke row always wins over the default**, so turning a default-on kind off
+  sticks. Revoking keeps the row with `revoked_at` for the audit trail. Consent
+  is checked server-side in the route (`memory.get_consent`), never read from the
+  client. `POST /api/location` answers `403 consent_required` when revoked, and
+  `tests/test_app.py` `TestLocationApi.setUp` grants it explicitly so the storage
+  tests do not depend on the default.
 
 ### Conversation persistence
 

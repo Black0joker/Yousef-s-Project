@@ -172,13 +172,18 @@ server-side, never trusted from the client.
 | `familiar_voice` | familiar-voice playback |
 
 `GET /api/consents` reports every kind; `PUT /api/consents/<kind>` with
-`{"granted": true|false}` grants or revokes one. A missing row means **not
-granted** — the default is off. Revoking keeps the row (with `revoked_at`) so the
-history survives.
+`{"granted": true|false}` grants or revokes one. Each entry also carries a
+`default` flag so the UI can tell a default from an explicit choice.
+
+**`location` is granted by default.** Every other kind requires an explicit
+opt-in. A revoke always wins over the default, so turning location off sticks
+until the user turns it back on — it does not silently revert on the next
+request. Users still control the browser-level geolocation prompt separately,
+so no position is sent until the browser itself allows it.
 
 `POST /api/location` returns `403 consent_required` while the `location` consent
 is off, so the `/chat` and `/call` pings stop storing anything until the user
-turns it on in `/memory`.
+turns it back on in `/memory`.
 
 ## Accounts & authentication
 
