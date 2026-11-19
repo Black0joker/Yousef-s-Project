@@ -279,8 +279,31 @@ class TrustedTestCase(unittest.TestCase):
         watching = trusted.watching(self.viewer, connection=self.conn)
         self.assertEqual([row["owner_id"] for row in watching], [self.owner])
         self.assertEqual(watching[0]["name"], "Owner One")
+        self.assertTrue(watching[0]["sharing"])
 
-    def test_watching_hides_owners_who_revoked_sharing(self):
+    def test_watching_still_lists_an_owner_who_has_not_enabled_sharing(self):
+        # an accepted invite must never look like it vanished
+        memory.set_consent(self.owner, "trusted_sharing", True, connection=self.conn)
+        contact = trusted.invite(self.owner, "viewer@example.com", connection=self.conn)
+        trusted.accept(self.viewer, contact["id"], connection=self.conn)
+        memory.set_consent(self.owner, "trusted_sharing", False, connection=self.conn)
+
+        watching = trusted.watching(self.viewer, connection=self.conn)
+        self.assertEqual([row["owner_id"] for row in watching], [self.owner])
+        self.assertFalse(watching[0]["sharing"])
+
+    def test_watching_never_leaks_activity_while_sharing_is_off(self):
+        memory.set_consent(self.owner, "trusted_sharing", True, connection=self.conn)
+        contact = trusted.invite(self.owner, "viewer@example.com", connection=self.conn)
+        trusted.accept(self.viewer, contact["id"], connection=self.conn)
+        memory.set_consent(self.owner, "trusted_sharing", False, connection=self.conn)
+
+        row = trusted.watching(self.viewer, connection=self.conn)[0]
+        for field in ("last_seen", "location", "warning"):
+            self.assertNotIn(field, row)
+        self.assertIsNone(trusted.peek(self.viewer, contact["id"], connection=self.conn))
+
+    def test_watching_hides_a_revoked_contact(self):
         contact = self.share()
         trusted.revoke(self.owner, contact["id"], connection=self.conn)
         self.assertEqual(trusted.watching(self.viewer, connection=self.conn), [])

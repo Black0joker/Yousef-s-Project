@@ -22,6 +22,12 @@
       invitesEmpty: "No pending invitations.",
       watchingTitle: "People who trust me",
       watchingEmpty: "Nobody is watching over you yet.",
+      sharingTitle: "Share my activity",
+      sharingHint: "While this is off, the people you added can see that you invited them but not your last seen or location.",
+      sharingOn: "Sharing on",
+      sharingOff: "Sharing off",
+      notSharing: "They have not turned sharing on yet",
+      paused: "Sharing paused",
       pending: "Waiting for them to accept",
       accepted: "Accepted",
       revoked: "Revoked",
@@ -58,6 +64,12 @@
       invitesEmpty: "لا توجد دعوات معلقة.",
       watchingTitle: "أشخاص يثقون بي",
       watchingEmpty: "لا أحد يطمئن عليك بعد.",
+      sharingTitle: "مشاركة نشاطي",
+      sharingHint: "عند إيقافها، يرى من أضفتهم أنك دعوتهم، لكن ليس آخر ظهورك ولا موقعك.",
+      sharingOn: "المشاركة مفعّلة",
+      sharingOff: "المشاركة متوقفة",
+      notSharing: "لم يفعّلوا المشاركة بعد",
+      paused: "المشاركة متوقفة",
       pending: "بانتظار موافقتهم",
       accepted: "تمت الموافقة",
       revoked: "ملغى",
@@ -103,6 +115,7 @@
   var invitesEmpty = document.getElementById("invites-empty");
   var watchingList = document.getElementById("watching-list");
   var watchingEmpty = document.getElementById("watching-empty");
+  var sharingToggle = document.getElementById("sharing-toggle");
   var form = document.getElementById("trusted-form");
 
   function showError(message) {
@@ -321,9 +334,25 @@
   function renderWatching(items) {
     watchingList.textContent = "";
     items.forEach(function (person) {
-      var row = card(person.name || person.email || "", statusLabel("accepted"));
+      // "sharing: false" means the owner accepted but has not turned sharing on.
+      // Show the person with that state rather than hiding them, so an accepted
+      // invitation never looks like it vanished.
+      var subText = person.sharing ? statusLabel("accepted") : str().notSharing;
+      var row = card(person.name || person.email || "", subText);
       var detail = el("div", "mt-2 hidden");
       var expanded = false;
+
+      if (!person.sharing) {
+        row.body.appendChild(
+          el(
+            "p",
+            "mt-2 rounded-lg bg-sand-100 px-2.5 py-1.5 text-xs text-brand-700 dark:bg-white/5 dark:text-sand-300",
+            str().paused
+          )
+        );
+        watchingList.appendChild(row.item);
+        return;
+      }
 
       var toggle = actionButton(str().see, function () {
         expanded = !expanded;
@@ -349,6 +378,58 @@
       watchingList.appendChild(row.item);
     });
     watchingEmpty.classList.toggle("hidden", items.length > 0);
+  }
+
+  // --- sharing switch ----------------------------------------------------
+
+  var sharingGranted = false;
+
+  function renderSharing(granted) {
+    sharingGranted = granted;
+    if (!sharingToggle) return;
+    sharingToggle.textContent = granted ? str().sharingOn : str().sharingOff;
+    sharingToggle.className =
+      "shrink-0 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors " +
+      (granted
+        ? "bg-brand-100 text-brand-800 hover:bg-brand-200 dark:bg-brand-900/60 dark:text-brand-100 dark:hover:bg-brand-800"
+        : "bg-amber-100 text-amber-800 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200 dark:hover:bg-amber-900/60");
+  }
+
+  function loadSharing() {
+    return Session.authFetch("/api/consents")
+      .then(function (response) {
+        if (!response.ok) return null;
+        return response.json();
+      })
+      .then(function (data) {
+        var entry = data && data.consents && data.consents.trusted_sharing;
+        renderSharing(!!(entry && entry.granted));
+      })
+      .catch(function () {
+        /* the switch keeps its last state */
+      });
+  }
+
+  if (sharingToggle) {
+    sharingToggle.addEventListener("click", function () {
+      clearMessages();
+      Session.authFetch("/api/consents/trusted_sharing", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ granted: !sharingGranted }),
+      })
+        .then(function (response) {
+          if (!response.ok) throw new Error(str().genericError);
+          return response.json();
+        })
+        .then(function (data) {
+          renderSharing(!!data.granted);
+          return loadAll();
+        })
+        .catch(function (err) {
+          showError(err.message || str().genericError);
+        });
+    });
   }
 
   // --- loading -----------------------------------------------------------
@@ -407,5 +488,6 @@
     });
   }
 
+  loadSharing();
   loadAll();
 })();

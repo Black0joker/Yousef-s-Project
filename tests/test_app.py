@@ -1731,6 +1731,25 @@ class TestTrustedApi(AppTestCase):
         )
         watching = self.http.get("/api/trusted/watching", headers=friend_headers).get_json()
         self.assertEqual(len(watching["watching"]), 1)
+        self.assertTrue(watching["watching"][0]["sharing"])
+
+    def test_watching_shows_a_contact_whose_sharing_is_off(self):
+        # the owner accepted but never enabled trusted_sharing
+        friend_headers, _ = self.register("friend@example.com")
+        contact = self.invite(self.headers, "friend@example.com").get_json()
+        self.http.post(
+            f"/api/trusted/invitations/{contact['id']}/accept", headers=friend_headers
+        )
+        watching = self.http.get("/api/trusted/watching", headers=friend_headers).get_json()
+        self.assertEqual(len(watching["watching"]), 1)
+        self.assertFalse(watching["watching"][0]["sharing"])
+        # but the activity itself stays hidden
+        self.assertEqual(
+            self.http.get(
+                f"/api/trusted/people/{contact['id']}", headers=friend_headers
+            ).status_code,
+            403,
+        )
 
     def test_a_stranger_cannot_peek(self):
         friend_headers, _ = self.register("friend@example.com")
@@ -1760,6 +1779,7 @@ class TestTrustedApi(AppTestCase):
         self.assertIn(b'id="trusted-list"', response.data)
         self.assertIn(b'id="invites-list"', response.data)
         self.assertIn(b'id="watching-list"', response.data)
+        self.assertIn(b'id="sharing-toggle"', response.data)
 
 
 if __name__ == "__main__":

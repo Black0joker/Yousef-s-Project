@@ -392,8 +392,12 @@ def watching(
 ) -> List[Dict[str, Any]]:
     """Owners who have accepted this user as a trusted contact.
 
-    Only returns rows whose owner still grants ``trusted_sharing``; a revoked
-    consent hides the relationship entirely rather than showing it greyed out.
+    Rows are returned even when the owner has not (yet) granted
+    ``trusted_sharing``, flagged with ``sharing``. Hiding them made an accepted
+    invitation look like it had vanished, with nothing on the page explaining
+    why — the viewer has no way to turn another account's consent on.
+    ``peek()`` still refuses to return activity, so nothing leaks: the entry is
+    a label, not data.
     """
     key = _user_id(user_id)
     address = _owner_email(key, connection)
@@ -421,8 +425,9 @@ def watching(
 
     result: List[Dict[str, Any]] = []
     for row in rows:
-        if not memory.get_consent(row["owner_id"], "trusted_sharing", connection=connection):
-            continue
+        sharing = memory.get_consent(
+            row["owner_id"], "trusted_sharing", connection=connection
+        )
         result.append(
             {
                 "id": row["id"],
@@ -431,6 +436,7 @@ def watching(
                 "can_see_location": bool(row["can_see_location"]),
                 "can_see_last_seen": bool(row["can_see_last_seen"]),
                 "accepted_at": row["accepted_at"],
+                "sharing": sharing,
             }
         )
     return result

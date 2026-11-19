@@ -220,8 +220,13 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   oracle, and `tests/test_trusted.py` pins the behaviour.
 - `trusted_sharing` is a consent kind and is **not** in
   `DEFAULT_GRANTED_CONSENTS`: sharing with another person needs an explicit
-  opt-in even though `location` is on by default. Add its label to
-  `CONSENT_LABELS` in `static/memory-page.js` or the UI shows the raw key.
+  opt-in even though `location` is on by default. It has a toggle on `/trusted`
+  as well as on `/memory` — an owner who never opens `/memory` would otherwise
+  never find it and the feature would look broken.
+- `watching()` returns accepted contacts **even when `sharing` is false**, and
+  `renderWatching()` shows them as "sharing paused". Filtering them out made an
+  accepted invitation look like it had vanished; the viewer cannot turn another
+  account's consent on. `peek()` still refuses, so the flag leaks nothing.
 - `status` is `unknown` when `last_seen` is null. A never-active user must not
   report `stale`/`warning`; that would be a false alarm on a brand-new account.
   The warning is a prompt to check in, never a claim that something is wrong.
@@ -373,9 +378,10 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   `static/auth.js`, whose login/register POSTs run before a token exists and
   must not redirect on 401.
 - `templates/trusted.html` + `static/trusted-page.js` are the `/trusted` shell:
-  invite by email, accept/decline invitations, and expand a person to see their
-  last seen and location. The "View activity" toggle fetches
-  `/api/trusted/people/<id>` and renders the warning badge; a `403` means the
+  the sharing switch, invite by email, accept/decline invitations, and expand a
+  person to see their last seen and location. `renderWatching()` must render a
+  `sharing: false` contact as "sharing paused" rather than skipping it. The
+  "View activity" toggle fetches `/api/trusted/people/<id>`; a `403` means the
   gates closed and must surface as an error, not as an empty card.
 - Browser state keys: `th_token`, `th_expires_at`, `th_user`, `th_theme`,
   `th_language`, and per-account `th_chat_history_<user id>`.

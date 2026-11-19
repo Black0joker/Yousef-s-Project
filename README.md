@@ -274,6 +274,18 @@ raises a false alarm. The warning means "no activity recorded", which can simply
 mean the app was closed; it must never be worded as evidence that something is
 wrong.
 
+**The `trusted_sharing` switch.** It defaults to **off**, so an accepted
+invitation shows the person as "sharing paused" until the owner turns it on. The
+switch lives at the top of `/trusted` (and also appears on `/memory` with the
+other permissions). A viewer cannot enable it for someone else — only the owner
+can.
+
+`GET /api/trusted/watching` lists every accepted contact with a `sharing` flag,
+even while that flag is `false`. Hiding the row would make an accepted
+invitation look like it vanished, and the viewer has no way to fix it.
+`GET /api/trusted/people/<id>` still returns `403` while sharing is off, so the
+flag is a label, not data.
+
 **No email enumeration.** `POST /api/trusted` answers `201` whether or not the
 address has an account, so it cannot be used to probe for SAGE users.
 
