@@ -33,6 +33,7 @@
       micUnavailable: "No microphone was found, or it is in use by another app. You can still type.",
       micLanguage: "Speech recognition does not support this language. You can still type.",
       micNetwork: "Speech recognition lost its connection. Retrying...",
+      micNetworkOffline: "Speech recognition is unavailable right now (the browser could not reach its speech service). You can still type, or try Chrome again later.",
       noSpeech: "Speech recognition is not available in this browser. You can still type.",
       audioBlocked: "The browser blocked audio. Tap Start call once, then try again.",
       error: "Something went wrong.",
@@ -63,6 +64,7 @@
       micUnavailable: "لم يتم العثور على ميكروفون أو أنه مستخدم في تطبيق آخر. يمكنك الكتابة.",
       micLanguage: "التعرف على الكلام لا يدعم هذه اللغة. يمكنك الكتابة.",
       micNetwork: "انقطع اتصال التعرف على الكلام. جارٍ إعادة المحاولة...",
+      micNetworkOffline: "التعرف على الكلام غير متاح حاليًا (لم يستطع المتصفح الوصول إلى خدمة الكلام). يمكنك الكتابة، أو حاول باستخدام Chrome لاحقًا.",
       noSpeech: "التعرف على الكلام غير متاح في هذا المتصفح. يمكنك الكتابة.",
       audioBlocked: "منع المتصفح تشغيل الصوت. اضغط «بدء المكالمة» مرة ثم حاول مجددًا.",
       error: "حدث خطأ ما.",
@@ -265,6 +267,10 @@
   var RESTART_DELAY_MS = 300;
   // Chrome sometimes ends a continuous session without firing onend at all.
   var WATCHDOG_MS = 1500;
+  // A "network" error means Chrome could not reach its own speech service.
+  // Retrying forever leaves the user staring at a spinner, so give up after a
+  // few attempts and say plainly that typing is the way forward.
+  var MAX_NETWORK_RETRIES = 3;
 
   var restartTimer = null;
   var watchdogTimer = null;
@@ -338,7 +344,6 @@
     recognition.onstart = function () {
       listening = true;
       recognitionRunning = true;
-      restartAttempts = 0;
       updateMicButton();
       if (!busy && !speechBusy) setCallStatus(str().listening, "listening");
     };
@@ -372,9 +377,14 @@
         return;
       }
       if (code === "network") {
-        // Chrome's recognizer needs to reach its speech service.
-        showError(str().micNetwork);
+        // Chrome's recognizer needs to reach its speech service. That service
+        // is out of this app's control, so a few retries then a clear stop.
         restartAttempts += 1;
+        if (restartAttempts > MAX_NETWORK_RETRIES) {
+          fatalRecognition(str().micNetworkOffline);
+          return;
+        }
+        showError(str().micNetwork);
         scheduleRestart(Math.min(8000, 1000 * restartAttempts));
         return;
       }
@@ -389,6 +399,10 @@
       for (var i = event.resultIndex; i < event.results.length; i++) {
         heard += event.results[i][0].transcript;
       }
+      // A real result proves the speech service is reachable again, so the
+      // network retry budget starts fresh. Resetting on onstart would defeat
+      // the cap: a failing session still fires onstart before its error.
+      restartAttempts = 0;
       // barge-in: the user started talking, so stop the assistant's audio
       if (heard.trim() && (currentAudio || speechBusy)) {
         stopSpeech();

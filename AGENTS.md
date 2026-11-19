@@ -362,6 +362,11 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   disable the mic, explain why); `network` retries with backoff;
   `no-speech`/`aborted` are routine and left to `onend`. Ignoring a code makes a
   broken recognizer indistinguishable from a working one.
+- A `network` error means Chrome cannot reach **its own** speech service; the
+  app cannot fix that. It is capped at `MAX_NETWORK_RETRIES` and then reported
+  as fatal, because retrying forever leaves the user watching a spinner. The
+  retry budget resets in `onresult`, not `onstart` — a failing session still
+  fires `onstart` before its error, so resetting there would remove the cap.
 
 ### Streaming and UI
 
