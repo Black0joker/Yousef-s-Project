@@ -34,6 +34,7 @@
       micLanguage: "Speech recognition does not support this language. You can still type.",
       micNetwork: "Speech recognition lost its connection. Retrying...",
       micNetworkOffline: "Speech recognition is unavailable right now (the browser could not reach its speech service). You can still type, or try Chrome again later.",
+      micBraveBlocked: "This browser blocks Chrome's speech service, so voice input cannot work. Open the call page in Google Chrome or Microsoft Edge, or type instead.",
       noSpeech: "Speech recognition is not available in this browser. You can still type.",
       audioBlocked: "The browser blocked audio. Tap Start call once, then try again.",
       error: "Something went wrong.",
@@ -65,6 +66,7 @@
       micLanguage: "التعرف على الكلام لا يدعم هذه اللغة. يمكنك الكتابة.",
       micNetwork: "انقطع اتصال التعرف على الكلام. جارٍ إعادة المحاولة...",
       micNetworkOffline: "التعرف على الكلام غير متاح حاليًا (لم يستطع المتصفح الوصول إلى خدمة الكلام). يمكنك الكتابة، أو حاول باستخدام Chrome لاحقًا.",
+      micBraveBlocked: "هذا المتصفح يحجب خدمة الكلام الخاصة بـ Chrome، لذا لا يمكن استخدام الإدخال الصوتي. افتح صفحة المكالمة في Google Chrome أو Microsoft Edge، أو اكتب بدلًا من ذلك.",
       noSpeech: "التعرف على الكلام غير متاح في هذا المتصفح. يمكنك الكتابة.",
       audioBlocked: "منع المتصفح تشغيل الصوت. اضغط «بدء المكالمة» مرة ثم حاول مجددًا.",
       error: "حدث خطأ ما.",
@@ -330,6 +332,19 @@
     showError(message);
   }
 
+  // Chrome's speech recognition talks to Google's service. Brave and many
+  // Chromium builds ship without the API keys for it, which surfaces as a
+  // permanent "network" error no amount of retrying can fix.
+  function speechProneToNetworkFailure() {
+    try {
+      if (window.navigator && window.navigator.brave) return true;
+      var ua = (window.navigator && window.navigator.userAgent) || "";
+      return /\bBrave\b/.test(ua);
+    } catch (err) {
+      return false;
+    }
+  }
+
   function setupRecognition() {
     if (!SpeechRecognition) {
       recognitionAvailable = false;
@@ -380,6 +395,11 @@
         // Chrome's recognizer needs to reach its speech service. That service
         // is out of this app's control, so a few retries then a clear stop.
         restartAttempts += 1;
+        if (restartAttempts === 1 && speechProneToNetworkFailure()) {
+          // Brave / Chromium block the endpoint entirely; retrying is futile.
+          fatalRecognition(str().micBraveBlocked);
+          return;
+        }
         if (restartAttempts > MAX_NETWORK_RETRIES) {
           fatalRecognition(str().micNetworkOffline);
           return;
