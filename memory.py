@@ -53,6 +53,10 @@ SELF_ENTITY_NAME = "Current User"
 SELF_ENTITY_TYPE = "Person"
 SELF_ALIASES = frozenset({"current user", "me", "i", "myself", "self", "أنا", "المستخدم الحالي"})
 
+#: Consent kinds a feature must check before using a user's data. Every entry is
+#: a switch the user owns; a missing row means "not granted".
+CONSENT_KINDS = frozenset({"location", "voice", "memory_sharing", "familiar_voice"})
+
 #: Predicates that hold at most one current value per entity. A person has one
 #: name, one birthday, one age at a time, so a newer statement supersedes the
 #: older one automatically instead of leaving two active facts behind.
@@ -135,6 +139,18 @@ ON memory_facts(user_id, entity_id);
 
 CREATE INDEX IF NOT EXISTS idx_memory_facts_predicate
 ON memory_facts(predicate COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS consents (
+    id         TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL,
+    granted_at TEXT NOT NULL,
+    revoked_at TEXT,
+    version    TEXT NOT NULL DEFAULT '1'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_consents_user_kind
+ON consents(user_id, kind);
 """
 
 
@@ -958,6 +974,304 @@ def query_memory(
         },
     )
     return result
+
+
+# --- consent --------------------------------------------------------------
+
+
+def _consent_kind(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise MemoryError("A consent kind is required.")
+    kind = value.strip().lower()
+    if kind not in CONSENT_KINDS:
+        raise MemoryError("Unknown consent kind.")
+    return kind
+
+
+def get_consent(
+    user_id: Any,
+    kind: Any,
+    connection: Optional[sqlite3.Connection] = None,
+) -> bool:
+    """Whether ``user_id`` currently grants ``kind``. Missing row means no."""
+    key = _user_id(user_id)
+    consent_kind = _consent_kind(kind)
+    token = _current_user.set(key)
+    try:
+        with _db(connection) as db:
+            row = _execute(
+                db,
+                """
+                SELECT revoked_at FROM consents
+                WHERE user_id = ? AND kind = ?
+                """,
+                (key, consent_kind),
+                operation="consent.get",
+            ).fetchone()
+        return row is not None and row["revoked_at"] is None
+    finally:
+        _current_user.reset(token)
+
+
+def list_consents(
+    user_id: Any,
+    connection: Optional[sqlite3.Connection] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Every consent kind with its state, so the UI can render switches."""
+    key = _user_id(user_id)
+    token = _current_user.set(key)
+    try:
+        with _db(connection) as db:
+            rows = _execute(
+                db,
+                "SELECT * FROM consents WHERE user_id = ?",
+                (key,),
+                operation="consent.list",
+            ).fetchall()
+    finally:
+        _current_user.reset(token)
+
+    stored = {row["kind"]: row for row in rows}
+    result: Dict[str, Dict[str, Any]] = {}
+    for kind in sorted(CONSENT_KINDS):
+        row = stored.get(kind)
+        result[kind] = {
+            "kind": kind,
+            "granted": row is not None and row["revoked_at"] is None,
+            "granted_at": row["granted_at"] if row else None,
+            "revoked_at": row["revoked_at"] if row else None,
+        }
+    return result
+
+
+def set_consent(
+    user_id: Any,
+    kind: Any,
+    granted: Any,
+    connection: Optional[sqlite3.Connection] = None,
+) -> Dict[str, Any]:
+    """Grant or revoke one consent kind, keeping a revoked row for the record."""
+    key = _user_id(user_id)
+    consent_kind = _consent_kind(kind)
+    if not isinstance(granted, bool):
+        raise MemoryError("granted must be true or false.")
+    now = _now()
+    token = _current_user.set(key)
+    try:
+        with _db(connection) as db:
+            if granted:
+                _execute(
+                    db,
+                    """
+                    INSERT INTO consents (id, user_id, kind, granted_at, revoked_at, version)
+                    VALUES (?, ?, ?, ?, NULL, '1')
+                    ON CONFLICT(user_id, kind)
+                    DO UPDATE SET granted_at = excluded.granted_at, revoked_at = NULL
+                    """,
+                    (_new_id(), key, consent_kind, now),
+                    operation="consent.grant",
+                )
+            else:
+                _execute(
+                    db,
+                    """
+                    INSERT INTO consents (id, user_id, kind, granted_at, revoked_at, version)
+                    VALUES (?, ?, ?, ?, ?, '1')
+                    ON CONFLICT(user_id, kind)
+                    DO UPDATE SET revoked_at = excluded.revoked_at
+                    """,
+                    (_new_id(), key, consent_kind, now, now),
+                    operation="consent.revoke",
+                )
+            db.commit()
+            row = _execute(
+                db,
+                "SELECT * FROM consents WHERE user_id = ? AND kind = ?",
+                (key, consent_kind),
+                operation="consent.get",
+            ).fetchone()
+    finally:
+        _current_user.reset(token)
+
+    return {
+        "kind": consent_kind,
+        "granted": bool(row and row["revoked_at"] is None),
+        "granted_at": row["granted_at"] if row else None,
+        "revoked_at": row["revoked_at"] if row else None,
+    }
+
+
+# --- user control: delete and export -------------------------------------
+
+
+def delete_fact(
+    user_id: Any, fact_id: Any, connection: Optional[sqlite3.Connection] = None
+) -> bool:
+    """Hard-delete one of the caller's facts. Returns whether a row went away."""
+    return _delete_owned(user_id, "memory_facts", fact_id, connection=connection)
+
+
+def delete_entity(
+    user_id: Any, entity_id: Any, connection: Optional[sqlite3.Connection] = None
+) -> bool:
+    """Hard-delete one entity; its facts and relationships cascade away."""
+    return _delete_owned(user_id, "entities", entity_id, connection=connection)
+
+
+def delete_relationship(
+    user_id: Any, relationship_id: Any, connection: Optional[sqlite3.Connection] = None
+) -> bool:
+    """Hard-delete one relationship without touching its entities."""
+    return _delete_owned(user_id, "relationships", relationship_id, connection=connection)
+
+
+def _delete_owned(
+    user_id: Any,
+    table: str,
+    row_id: Any,
+    connection: Optional[sqlite3.Connection] = None,
+) -> bool:
+    """Delete one row by id, but only when it belongs to ``user_id``."""
+    if table not in ("memory_facts", "entities", "relationships"):
+        raise MemoryError("Unsupported table.")
+    key = _user_id(user_id)
+    if not isinstance(row_id, str) or not row_id.strip():
+        return False
+    token = _current_user.set(key)
+    try:
+        with _db(connection) as db:
+            cursor = _execute(
+                db,
+                f"DELETE FROM {table} WHERE id = ? AND user_id = ?",
+                (row_id.strip(), key),
+                operation=f"{table}.delete",
+            )
+            db.commit()
+            deleted = cursor.rowcount > 0
+    finally:
+        _current_user.reset(token)
+
+    logger.info(
+        "memory.delete",
+        extra={
+            "event": "memory.delete",
+            "user_id": key,
+            "store": table,
+            "deleted": deleted,
+            "outcome": "ok",
+        },
+    )
+    return deleted
+
+
+def delete_all_memory(
+    user_id: Any, connection: Optional[sqlite3.Connection] = None
+) -> Dict[str, int]:
+    """Remove every entity, relationship, and fact for one account.
+
+    User-initiated deletion is a hard delete, unlike a superseded fact which
+    keeps its row with ``valid_until``. Relationships and facts go first so no
+    foreign-key cascade is relied on for ordering.
+    """
+    key = _user_id(user_id)
+    counts = {"entities": 0, "relationships": 0, "facts": 0}
+    token = _current_user.set(key)
+    try:
+        with _db(connection) as db:
+            for table, name in (
+                ("relationships", "relationships"),
+                ("memory_facts", "facts"),
+                ("entities", "entities"),
+            ):
+                cursor = _execute(
+                    db,
+                    f"DELETE FROM {table} WHERE user_id = ?",
+                    (key,),
+                    operation=f"{table}.delete_all",
+                )
+                counts[name] = cursor.rowcount if cursor.rowcount > 0 else 0
+            db.commit()
+    finally:
+        _current_user.reset(token)
+
+    logger.info(
+        "memory.delete_all",
+        extra={
+            "event": "memory.delete_all",
+            "user_id": key,
+            "entity_count": counts["entities"],
+            "relationship_count": counts["relationships"],
+            "fact_count": counts["facts"],
+            "outcome": "ok",
+        },
+    )
+    return counts
+
+
+def export_memory(
+    user_id: Any, connection: Optional[sqlite3.Connection] = None
+) -> Dict[str, Any]:
+    """Everything stored for one account, including expired facts.
+
+    The export is generated on demand and never persisted: the response is the
+    only copy, so there is no second store to secure or forget.
+    """
+    key = _user_id(user_id)
+    token = _current_user.set(key)
+    try:
+        with _db(connection) as db:
+            entity_rows = _execute(
+                db,
+                "SELECT * FROM entities WHERE user_id = ? ORDER BY created_at ASC",
+                (key,),
+                operation="entity.export",
+            ).fetchall()
+            relationship_rows = _execute(
+                db,
+                """
+                SELECT r.*, s.name AS source_name, t.name AS target_name
+                FROM relationships r
+                JOIN entities s ON s.id = r.source_entity_id
+                JOIN entities t ON t.id = r.target_entity_id
+                WHERE r.user_id = ? AND s.user_id = ? AND t.user_id = ?
+                ORDER BY r.created_at ASC
+                """,
+                (key, key, key),
+                operation="relationship.export",
+            ).fetchall()
+            fact_rows = _execute(
+                db,
+                """
+                SELECT f.*, e.name AS entity_name, e.entity_type AS entity_type
+                FROM memory_facts f JOIN entities e ON e.id = f.entity_id
+                WHERE f.user_id = ? AND e.user_id = ?
+                ORDER BY f.observed_at ASC, f.created_at ASC
+                """,
+                (key, key),
+                operation="fact.export",
+            ).fetchall()
+            consents = list_consents(key, connection=db)
+    finally:
+        _current_user.reset(token)
+
+    logger.info(
+        "memory.export",
+        extra={
+            "event": "memory.export",
+            "user_id": key,
+            "entity_count": len(entity_rows),
+            "relationship_count": len(relationship_rows),
+            "fact_count": len(fact_rows),
+            "outcome": "ok",
+        },
+    )
+    return {
+        "exported_at": _now(),
+        "entities": [_entity_dict(row) for row in entity_rows],
+        "relationships": [_relationship_dict(row) for row in relationship_rows],
+        "facts": [_fact_dict(row) for row in fact_rows],
+        "consents": consents,
+    }
 
 
 # --- agent tool definitions ----------------------------------------------

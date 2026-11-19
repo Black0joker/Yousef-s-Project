@@ -157,6 +157,7 @@ class TestPages(AppTestCase):
         self.assertIn(b"session.js", response.data)
         self.assertIn(b"location.js", response.data)
         self.assertIn(b'href="/call"', response.data)
+        self.assertIn(b'href="/memory"', response.data)
 
     def test_chat_page_has_language_toggle(self):
         body = self.http.get("/chat").data
@@ -832,6 +833,13 @@ class TestVoiceApi(AppTestCase):
 class TestLocationApi(AppTestCase):
     """POST /api/location stores the caller's latest position only."""
 
+    def setUp(self):
+        super().setUp()
+        # storing a position requires the location consent
+        self.http.put(
+            "/api/consents/location", json={"granted": True}, headers=self.headers
+        )
+
     def user_row(self, email=None):
         connection = auth.connect()
         try:
@@ -875,10 +883,15 @@ class TestLocationApi(AppTestCase):
         other = dict(CREDENTIALS)
         other["email"] = "other@example.com"
         token = self.http.post("/api/auth/register", json=other).get_json()["token"]
+        other_headers = {"Authorization": "Bearer " + token}
+        # the second account needs its own consent before anything is stored
+        self.http.put(
+            "/api/consents/location", json={"granted": True}, headers=other_headers
+        )
         self.http.post(
             "/api/location",
             json={"latitude": 60.0, "longitude": 70.0},
-            headers={"Authorization": "Bearer " + token},
+            headers=other_headers,
         )
 
         self.assertAlmostEqual(self.user_row()["last_latitude"], 1.5)
@@ -1130,6 +1143,181 @@ class TestConversationPersistence(AppTestCase):
             [turn["content"] for turn in self.stored_turns()],
             ["one", "first", "two", "second"],
         )
+
+
+class TestMemoryControlApi(AppTestCase):
+    """User-facing memory control: list, delete, export, and consent."""
+
+    def seed(self):
+        return memory.save_memory(
+            self.user_id(),
+            {
+                "entities": [{"name": "Sara", "entity_type": "Person"}],
+                "relationships": [
+                    {
+                        "source_entity": "Current User",
+                        "target_entity": "Sara",
+                        "relationship_type": "Sister",
+                    }
+                ],
+                "facts": [{"entity": "Sara", "predicate": "age", "value": 20}],
+            },
+        )
+
+    def user_id(self):
+        return self.http.get("/api/auth/me", headers=self.headers).get_json()["user"]["id"]
+
+    def test_list_returns_the_callers_memory(self):
+        self.seed()
+        body = self.http.get("/api/memory", headers=self.headers).get_json()
+        self.assertEqual({entity["name"] for entity in body["entities"]}, {"Current User", "Sara"})
+        self.assertEqual(len(body["facts"]), 1)
+
+    def test_list_is_empty_for_a_fresh_account(self):
+        body = self.http.get("/api/memory", headers=self.headers).get_json()
+        self.assertEqual(body, {"entities": [], "relationships": [], "facts": []})
+
+    def test_delete_fact(self):
+        self.seed()
+        fact = self.http.get("/api/memory", headers=self.headers).get_json()["facts"][0]
+        response = self.http.delete(f"/api/memory/fact/{fact['id']}", headers=self.headers)
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(self.http.get("/api/memory", headers=self.headers).get_json()["facts"], [])
+
+    def test_delete_relationship(self):
+        self.seed()
+        rel = self.http.get("/api/memory", headers=self.headers).get_json()["relationships"][0]
+        response = self.http.delete(
+            f"/api/memory/relationship/{rel['id']}", headers=self.headers
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(
+            self.http.get("/api/memory", headers=self.headers).get_json()["relationships"], []
+        )
+
+    def test_delete_unknown_row_is_404(self):
+        response = self.http.delete("/api/memory/fact/nope", headers=self.headers)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.get_json()["error"]["code"], "not_found")
+
+    def test_delete_all_requires_confirmation(self):
+        self.seed()
+        response = self.http.delete("/api/memory", headers=self.headers)
+        self.assertEqual(response.status_code, 400)
+        # nothing was removed
+        self.assertEqual(len(self.http.get("/api/memory", headers=self.headers).get_json()["facts"]), 1)
+
+    def test_delete_all_with_confirmation(self):
+        self.seed()
+        response = self.http.delete(
+            "/api/memory", json={"confirm": True}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("deleted", response.get_json())
+        self.assertEqual(
+            self.http.get("/api/memory", headers=self.headers).get_json(),
+            {"entities": [], "relationships": [], "facts": []},
+        )
+
+    def test_export_is_a_json_download(self):
+        self.seed()
+        response = self.http.get("/api/memory/export", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/json")
+        self.assertIn("attachment", response.headers["Content-Disposition"])
+        body = response.get_json()
+        self.assertEqual(len(body["facts"]), 1)
+        self.assertIn("consents", body)
+
+    def test_another_account_cannot_delete_or_see_memory(self):
+        self.seed()
+        fact = self.http.get("/api/memory", headers=self.headers).get_json()["facts"][0]
+
+        other = dict(CREDENTIALS)
+        other["email"] = "intruder@example.com"
+        token = self.http.post("/api/auth/register", json=other).get_json()["token"]
+        other_headers = {"Authorization": "Bearer " + token}
+
+        self.assertEqual(
+            self.http.delete(f"/api/memory/fact/{fact['id']}", headers=other_headers).status_code,
+            404,
+        )
+        self.assertEqual(self.http.get("/api/memory", headers=other_headers).get_json()["facts"], [])
+
+    def test_memory_api_requires_auth(self):
+        self.assertEqual(self.http.get("/api/memory").status_code, 401)
+        self.assertEqual(self.http.get("/api/memory/export").status_code, 401)
+        self.assertEqual(self.http.delete("/api/memory").status_code, 401)
+
+    def test_consents_start_off_and_can_be_toggled(self):
+        body = self.http.get("/api/consents", headers=self.headers).get_json()
+        self.assertEqual(set(body["consents"]), set(memory.CONSENT_KINDS))
+        self.assertFalse(body["consents"]["location"]["granted"])
+
+        response = self.http.put(
+            "/api/consents/location", json={"granted": True}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["granted"])
+
+        again = self.http.get("/api/consents", headers=self.headers).get_json()
+        self.assertTrue(again["consents"]["location"]["granted"])
+
+    def test_consent_requires_a_boolean(self):
+        response = self.http.put(
+            "/api/consents/location", json={"granted": "yes"}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"]["code"], "invalid_request")
+
+    def test_unknown_consent_kind_is_400(self):
+        response = self.http.put(
+            "/api/consents/telepathy", json={"granted": True}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_memory_page_renders_as_public_shell(self):
+        response = self.http.get("/memory")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"memory-page.js", response.data)
+        self.assertIn(b"session.js", response.data)
+        self.assertIn(b"theme.js", response.data)
+        self.assertIn(b'id="consent-list"', response.data)
+
+
+class TestLocationConsent(AppTestCase):
+    """Storing a position now requires the location consent."""
+
+    def test_location_is_refused_without_consent(self):
+        response = self.http.post(
+            "/api/location", json={"latitude": 1.0, "longitude": 2.0}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["error"]["code"], "consent_required")
+
+    def test_location_is_stored_after_granting_consent(self):
+        self.http.put("/api/consents/location", json={"granted": True}, headers=self.headers)
+        response = self.http.post(
+            "/api/location", json={"latitude": 1.0, "longitude": 2.0}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 204)
+
+    def test_revoking_consent_stops_storage_again(self):
+        self.http.put("/api/consents/location", json={"granted": True}, headers=self.headers)
+        self.http.post(
+            "/api/location", json={"latitude": 1.0, "longitude": 2.0}, headers=self.headers
+        )
+        self.http.put("/api/consents/location", json={"granted": False}, headers=self.headers)
+        response = self.http.post(
+            "/api/location", json={"latitude": 5.0, "longitude": 6.0}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_invalid_coordinates_are_still_400_before_the_consent_check(self):
+        response = self.http.post(
+            "/api/location", json={"latitude": 999, "longitude": 0}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 400)
 
 
 if __name__ == "__main__":

@@ -446,6 +446,12 @@ def settings_page():
     return render_template("settings.html")
 
 
+@app.get("/memory")
+def memory_page():
+    """Memory shell: the browser lists, deletes, and exports with its token."""
+    return render_template("memory.html")
+
+
 # --- authentication API ---------------------------------------------------
 
 
@@ -936,6 +942,118 @@ def api_voice_speak():
     return Response(audio, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
 
 
+# --- memory API -----------------------------------------------------------
+
+
+@app.get("/api/memory")
+def api_memory_list():
+    """Everything the caller has stored, newest-first per store."""
+    claims = auth.current_user() or {}
+    data = memory.query_memory(
+        claims.get("id"),
+        include_expired=request.args.get("include_expired", "").lower() in ("1", "true", "yes"),
+        limit=request.args.get("limit"),
+    )
+    return jsonify(data)
+
+
+@app.get("/api/memory/export")
+def api_memory_export():
+    """Download everything stored for this account as JSON."""
+    claims = auth.current_user() or {}
+    payload = memory.export_memory(claims.get("id"))
+    body = json.dumps(payload, ensure_ascii=False, indent=2)
+    return Response(
+        body,
+        mimetype="application/json",
+        headers={
+            "Content-Disposition": 'attachment; filename="sage-memory-export.json"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.delete("/api/memory/fact/<fact_id>")
+def api_memory_delete_fact(fact_id: str):
+    """Remove one of the caller's facts. Unknown or foreign ids are 404."""
+    claims = auth.current_user() or {}
+    if not memory.delete_fact(claims.get("id"), fact_id):
+        return jsonify({"error": {"code": "not_found", "message": "Fact not found."}}), 404
+    return "", 204
+
+
+@app.delete("/api/memory/entity/<entity_id>")
+def api_memory_delete_entity(entity_id: str):
+    """Remove one entity; its facts and relationships cascade away."""
+    claims = auth.current_user() or {}
+    if not memory.delete_entity(claims.get("id"), entity_id):
+        return jsonify({"error": {"code": "not_found", "message": "Entity not found."}}), 404
+    return "", 204
+
+
+@app.delete("/api/memory/relationship/<relationship_id>")
+def api_memory_delete_relationship(relationship_id: str):
+    """Remove one relationship, leaving both entities in place."""
+    claims = auth.current_user() or {}
+    if not memory.delete_relationship(claims.get("id"), relationship_id):
+        return (
+            jsonify({"error": {"code": "not_found", "message": "Relationship not found."}}),
+            404,
+        )
+    return "", 204
+
+
+@app.delete("/api/memory")
+def api_memory_delete_all():
+    """Forget everything for this account. Requires an explicit confirmation."""
+    claims = auth.current_user() or {}
+    data = request.get_json(silent=True) or {}
+    if data.get("confirm") is not True:
+        return (
+            jsonify(
+                {
+                    "error": {
+                        "code": "invalid_request",
+                        "message": 'Send {"confirm": true} to delete all memory.',
+                    }
+                }
+            ),
+            400,
+        )
+    counts = memory.delete_all_memory(claims.get("id"))
+    return jsonify({"deleted": counts})
+
+
+# --- consent API ----------------------------------------------------------
+
+
+@app.get("/api/consents")
+def api_consents():
+    """Every consent kind and whether the caller currently grants it."""
+    claims = auth.current_user() or {}
+    return jsonify({"consents": memory.list_consents(claims.get("id"))})
+
+
+@app.put("/api/consents/<kind>")
+def api_set_consent(kind: str):
+    """Grant or revoke one consent kind."""
+    claims = auth.current_user() or {}
+    data = request.get_json(silent=True) or {}
+    granted = data.get("granted")
+    if not isinstance(granted, bool):
+        return (
+            jsonify(
+                {"error": {"code": "invalid_request", "message": "`granted` must be true or false."}}
+            ),
+            400,
+        )
+    try:
+        result = memory.set_consent(claims.get("id"), kind, granted)
+    except memory.MemoryError as exc:
+        return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
+    return jsonify(result)
+
+
 # --- location API ---------------------------------------------------------
 
 
@@ -962,6 +1080,28 @@ def api_location():
             },
         )
         return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
+
+    # Storing a position is only allowed while the user grants the consent.
+    if not memory.get_consent(claims.get("id"), "location"):
+        logger.info(
+            "location.skipped",
+            extra={
+                "event": "location.skipped",
+                "user_id": claims.get("id"),
+                "outcome": "no_consent",
+            },
+        )
+        return (
+            jsonify(
+                {
+                    "error": {
+                        "code": "consent_required",
+                        "message": "Location sharing is turned off in settings.",
+                    }
+                }
+            ),
+            403,
+        )
 
     try:
         auth.record_location(claims.get("id"), latitude, longitude)

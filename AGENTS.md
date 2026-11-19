@@ -105,6 +105,23 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   predicates (`likes`, `hobby`, `pet`) to that set — it would silently discard
   real data. Identical re-saves are a no-op, checked *before* the expire step so
   an unchanged value keeps its original row.
+- **User-initiated deletion is a hard delete**, unlike supersession: `DELETE
+  FROM` on the row, with entities cascading to their facts and relationships.
+  Do not "soft delete" user-requested removal — the requirement is that the data
+  is gone. `delete_all_memory()` clears all three stores and leaves `consents`
+  intact.
+- `_delete_owned()` is the only deletion path and always filters by `user_id`;
+  an unknown or foreign id returns `False` so the route answers `404` rather
+  than confirming the row exists. Never delete by id alone.
+- `export_memory()` includes expired facts and consents, is generated on demand,
+  and is never persisted — there is no second copy to secure.
+- `consents` rows are keyed `(user_id, kind)` with `CONSENT_KINDS` in
+  `memory.py`. A **missing row means not granted**; revoking keeps the row with
+  `revoked_at` for the audit trail. Consent is checked server-side in the route
+  (`memory.get_consent`), never read from the client. `POST /api/location`
+  answers `403 consent_required` without it, and `tests/test_app.py`
+  `TestLocationApi.setUp` grants it so the storage tests still exercise the
+  happy path.
 
 ### Conversation persistence
 
@@ -159,9 +176,10 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - All routes are guarded by the auth middleware except `PUBLIC_PATHS` and
   `PUBLIC_PREFIXES` in `auth.py`. Add new public routes there; API paths get a
   JSON 401, page paths redirect to `/login`.
-- `/chat`, `/call`, and `/settings` are intentionally public, data-free HTML
-  shells; authentication and user data come from `/api/auth/me`, and every write
-  goes through the guarded API (`PATCH /api/auth/profile`, `POST /api/auth/password`).
+- `/chat`, `/call`, `/settings`, and `/memory` are intentionally public, data-free
+  HTML shells; authentication and user data come from `/api/auth/me`, and every
+  write goes through the guarded API (`PATCH /api/auth/profile`,
+  `POST /api/auth/password`, `DELETE /api/memory/...`).
 - Profile updates reissue the JWT because `full_name`/`email` live in the claims;
   the client must `Session.save(...)` the returned token. Changing the email
   requires `current_password`, and both update paths use `auth.AuthError` codes.
@@ -269,6 +287,10 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   must not redirect on 401.
 - Browser state keys: `th_token`, `th_expires_at`, `th_user`, `th_theme`,
   `th_language`, and per-account `th_chat_history_<user id>`.
+- `templates/memory.html` + `static/memory-page.js` are the `/memory` shell:
+  list, per-item delete, export, "forget everything", and consent toggles. Every
+  call uses `Session.authFetch`; deletion asks for `window.confirm` first, and
+  `DELETE /api/memory` must send `{"confirm": true}` or it answers `400`.
 - `static/location.js` is loaded by `/chat` and `/call` only, after
   `session.js`. It pings `/api/location` every 5s, skips a tick while a request
   is in flight, pauses on `visibilitychange`, and stops permanently on

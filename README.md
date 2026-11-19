@@ -139,6 +139,47 @@ Behaviour worth knowing:
   `?` placeholders, matching the memory SQL log.
 - Deleting a user cascades to their conversations and turns.
 
+## Controlling your memory
+
+`/memory` is a public HTML shell (like `/settings`) that lists everything stored
+for the signed-in account and lets the user act on it.
+
+- **See it.** `GET /api/memory` returns the active entities, relationships, and
+  facts; add `?include_expired=true` to include superseded values.
+- **Delete it.** `DELETE /api/memory/fact/<id>`, `/entity/<id>`, or
+  `/relationship/<id>` removes one record. Deleting an entity cascades to its
+  facts and relationships. Unknown or foreign ids return `404`, so an id is
+  never a way into another account.
+- **Forget everything.** `DELETE /api/memory` requires `{"confirm": true}` and
+  wipes all three stores for that account only.
+- **Export it.** `GET /api/memory/export` streams a JSON download. The export is
+  built on demand and never stored server-side, so there is no second copy to
+  secure or forget.
+
+User-initiated deletion is a **hard delete**, unlike a superseded fact which
+keeps its row with `valid_until`. Deletion never removes consent records.
+
+## Consent
+
+Consent is stored per account in the `consents` table and is checked
+server-side, never trusted from the client.
+
+| Kind | Gates |
+| --- | --- |
+| `location` | storing a position via `POST /api/location` |
+| `voice` | voice replies |
+| `memory_sharing` | sharing memory with trusted people |
+| `familiar_voice` | familiar-voice playback |
+
+`GET /api/consents` reports every kind; `PUT /api/consents/<kind>` with
+`{"granted": true|false}` grants or revokes one. A missing row means **not
+granted** — the default is off. Revoking keeps the row (with `revoked_at`) so the
+history survives.
+
+`POST /api/location` returns `403 consent_required` while the `location` consent
+is off, so the `/chat` and `/call` pings stop storing anything until the user
+turns it on in `/memory`.
+
 ## Accounts & authentication
 
 Accounts live in a small SQLite database (`instance/app.db`, override with
@@ -170,6 +211,14 @@ Logging in returns a **JWT** (HS256, 7 days) that the browser keeps in
 | `POST` | `/api/location` | `latitude, longitude` | `204` |
 | `GET` | `/api/conversations` | – | `200 {conversations}` |
 | `GET` | `/api/conversations/<id>` | – | `200 {conversation, turns}` |
+| `GET` | `/api/memory` | – | `200 {entities, relationships, facts}` |
+| `GET` | `/api/memory/export` | – | `200` JSON download |
+| `DELETE` | `/api/memory/fact/<id>` | – | `204` / `404` |
+| `DELETE` | `/api/memory/entity/<id>` | – | `204` / `404` |
+| `DELETE` | `/api/memory/relationship/<id>` | – | `204` / `404` |
+| `DELETE` | `/api/memory` | `confirm: true` | `200 {deleted}` |
+| `GET` | `/api/consents` | – | `200 {consents}` |
+| `PUT` | `/api/consents/<kind>` | `granted` | `200 {kind, granted, ...}` |
 
 \* `current_password` is required only when the email address actually changes.
 
