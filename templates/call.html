@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Call · SAGE</title>
+
+  <!-- theme bootstrap: runs before first paint -->
+  <script src="{{ url_for('static', filename='theme.js') }}"></script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Plus+Jakarta+Sans:wght@600;700;800&family=Noto+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..600,0..1,0&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            body: ['Inter', 'system-ui', 'sans-serif'],
+            heading: ['Plus Jakarta Sans', 'system-ui', 'sans-serif'],
+            display: ['Plus Jakarta Sans', 'system-ui', 'sans-serif'],
+            label: ['Inter', 'system-ui', 'sans-serif'],
+          },
+          colors: {
+            brand: {
+              50: '#eef5f1', 100: '#dbe5e0', 200: '#b9ede0', 300: '#9ed1c4',
+              400: '#7ca89b', 500: '#5b8f7a', 600: '#3b665b', 700: '#1c4f45',
+              800: '#143f36', 900: '#0f3d33', 950: '#00261e',
+            },
+            sand: {
+              50: '#faf9f5', 100: '#f5f4f0', 200: '#e3e2df', 300: '#d8d6d1',
+              400: '#b6b4ae', 500: '#8a8883',
+            },
+          },
+        },
+      },
+    }
+  </script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='call.css') }}">
+</head>
+<body class="h-full bg-sand-50 font-body text-brand-950 antialiased selection:bg-brand-200 selection:text-brand-950 dark:bg-[#0b1512] dark:text-sand-100 dark:selection:bg-brand-700 dark:selection:text-white">
+
+  <div class="mx-auto flex h-screen w-full max-w-[880px] flex-col bg-white shadow-[0_0_60px_-24px_rgba(15,61,51,0.25)] dark:bg-[#141d1b] border-x border-sand-200/80 dark:border-white/5">
+
+    <header class="sticky top-0 z-40 w-full border-b border-sand-200/80 bg-white/85 backdrop-blur-md dark:border-white/5 dark:bg-[#141d1b]/85">
+      <div class="flex h-14 items-center justify-between px-4">
+        <div class="flex items-center gap-2.5">
+          <span class="flex h-8 w-8 items-center justify-center rounded-xl bg-brand-900 text-brand-200 shadow-sm shadow-brand-900/20">
+            <span class="material-symbols-outlined text-[19px]" aria-hidden="true">spa</span>
+          </span>
+          <h1 class="font-display text-[15px] font-extrabold tracking-[0.14em] text-brand-950 dark:text-white">SAGE</h1>
+          <span class="ms-1 hidden items-center gap-1 rounded-full bg-brand-50 px-2 py-1 text-[10px] font-semibold tracking-wide text-brand-700 ring-1 ring-brand-100 dark:bg-brand-900/40 dark:text-brand-200 dark:ring-brand-800 sm:inline-flex">
+            <span class="material-symbols-outlined text-[13px]" aria-hidden="true">call</span>
+            <span id="call-badge">Voice call</span>
+          </span>
+        </div>
+
+        <div class="flex items-center gap-1.5 text-sm">
+          <div class="flex items-center font-medium text-brand-700 dark:text-sand-300">
+            <a href="/chat" class="me-2 hidden text-xs font-normal text-brand-500 underline underline-offset-2 transition-colors hover:text-brand-800 dark:text-brand-300 dark:hover:text-white sm:inline" id="back-to-chat">Chat</a>
+            <span id="greeting" class="max-w-[80px] truncate sm:max-w-none">Hi there</span>
+            <button class="ms-2 cursor-pointer rounded text-xs font-normal text-brand-500 underline underline-offset-2 transition-colors hover:text-brand-800 dark:text-brand-300 dark:hover:text-white" id="logout" type="button">log out</button>
+          </div>
+
+          <div class="mx-1 hidden h-4 w-px bg-sand-200 dark:bg-white/10 sm:block"></div>
+
+          <button type="button" data-lang-toggle id="lang-toggle" aria-label="Switch language" title="Language"
+                  class="flex h-8 items-center gap-1 rounded-full border border-sand-200 bg-sand-100 px-2.5 text-brand-600 transition-colors hover:bg-sand-200 hover:text-brand-900 focus:outline-none focus:ring-2 focus:ring-brand-600/25 dark:border-white/10 dark:bg-white/5 dark:text-sand-300 dark:hover:bg-white/10 dark:hover:text-white">
+            <span class="material-symbols-outlined text-[17px]" aria-hidden="true">language</span>
+            <span id="lang-label" class="text-xs font-semibold">EN</span>
+          </button>
+
+          <button type="button" data-theme-toggle aria-label="Switch theme" title="Theme"
+                  class="flex h-8 w-8 items-center justify-center rounded-full border border-sand-200 bg-sand-100 text-brand-600 transition-colors hover:bg-sand-200 hover:text-brand-900 focus:outline-none focus:ring-2 focus:ring-brand-600/25 dark:border-white/10 dark:bg-white/5 dark:text-sand-300 dark:hover:bg-white/10 dark:hover:text-white">
+            <svg data-theme-icon="to-dark" xmlns="http://www.w3.org/2000/svg" class="hidden h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+            </svg>
+            <svg data-theme-icon="to-light" xmlns="http://www.w3.org/2000/svg" class="hidden h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="4"></circle>
+              <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+            </svg>
+          </button>
+
+          <a href="/settings" title="Account settings" aria-label="Account settings" class="flex h-8 w-8 items-center justify-center rounded-full bg-brand-100 text-brand-800 transition-colors hover:bg-brand-200 dark:bg-brand-900/60 dark:text-brand-200 dark:hover:bg-brand-800">
+            <span id="avatar" class="text-[11px] font-bold">?</span>
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <main class="flex flex-1 flex-col overflow-hidden" id="call-main">
+      <section class="call-stage" id="call-stage">
+        <div class="call-orb" id="call-orb" aria-hidden="true">
+          <span class="material-symbols-outlined">spa</span>
+        </div>
+        <h2 class="call-title" id="call-title">Voice call with SAGE</h2>
+        <p class="call-subtitle" id="call-subtitle">Speak naturally, or type if you prefer.</p>
+
+        <div class="call-banner hidden" id="voice-banner" role="status" aria-live="polite"></div>
+
+        <div class="call-buttons">
+          <button class="btn-primary call-start" id="start-call" type="button">
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">call</span>
+            <span id="start-label">Start call</span>
+          </button>
+          <button class="call-hangup hidden" id="hangup" type="button">
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">call_end</span>
+            <span id="hangup-label">Hang up</span>
+          </button>
+          <button class="call-mic hidden" id="mic-toggle" type="button" aria-pressed="false">
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">mic</span>
+            <span id="mic-label">Mute</span>
+          </button>
+        </div>
+
+        <p class="call-status" id="call-status">Ready when you are.</p>
+      </section>
+
+      <section class="call-transcript" id="transcript" aria-live="polite" aria-label="Call transcript"></section>
+    </main>
+
+    <footer class="sticky bottom-0 z-30 border-t border-sand-200/80 bg-gradient-to-t from-white via-white/95 to-white/80 px-4 pb-3 pt-3 backdrop-blur-md dark:border-white/5 dark:from-[#141d1b] dark:via-[#141d1b]/95 dark:to-[#141d1b]/80">
+      <form class="w-full" id="composer">
+        <div class="flex items-end gap-2.5 rounded-2xl border border-sand-200 bg-sand-50/60 p-2.5 shadow-sm transition-all focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-600/15 dark:border-white/10 dark:bg-white/5">
+          <textarea class="max-h-36 flex-1 resize-none overflow-y-auto border-0 bg-transparent py-1.5 text-[15px] leading-relaxed text-brand-950 placeholder:text-brand-400 focus:outline-none dark:text-sand-100 dark:placeholder:text-sand-500" id="input" placeholder="Type instead of speaking..." rows="1"></textarea>
+          <button aria-label="Send message" class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-brand-900 text-white shadow-sm transition-all hover:bg-brand-800 hover:shadow active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-brand-200 dark:text-brand-950 dark:hover:bg-brand-100" id="send" type="submit">
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">arrow_upward</span>
+          </button>
+        </div>
+      </form>
+      <div class="mt-2 text-center">
+        <p class="flex min-h-[16px] items-center justify-center gap-2 text-[11px] tracking-tight text-brand-400 dark:text-sand-500">
+          <span id="status-dot" class="h-1.5 w-1.5 animate-pulse rounded-full bg-brand-500" style="display:none"></span>
+          <span id="status"></span>
+        </p>
+      </div>
+    </footer>
+  </div>
+
+  <script src="{{ url_for('static', filename='session.js') }}"></script>
+  <script src="{{ url_for('static', filename='call.js') }}"></script>
+</body>
+</html>

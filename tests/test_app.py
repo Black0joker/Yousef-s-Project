@@ -155,14 +155,23 @@ class TestPages(AppTestCase):
         self.assertIn(b'id="composer"', response.data)
         self.assertIn(b"chat.js", response.data)
         self.assertIn(b"session.js", response.data)
+        self.assertIn(b'href="/call"', response.data)
 
     def test_chat_page_has_language_toggle(self):
         body = self.http.get("/chat").data
         self.assertIn(b"data-lang-toggle", body)
         self.assertIn(b'id="lang-label"', body)
 
+    def test_call_page_renders_as_public_shell(self):
+        response = self.http.get("/call")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'id="call-stage"', response.data)
+        self.assertIn(b"call.js", response.data)
+        self.assertIn(b"session.js", response.data)
+        self.assertIn(b"call.css", response.data)
+
     def test_pages_have_theme_support(self):
-        for path in ("/login", "/register", "/chat", "/settings"):
+        for path in ("/login", "/register", "/chat", "/settings", "/call"):
             with self.subTest(path=path):
                 body = self.http.get(path).data
                 self.assertIn(b"theme.js", body, "theme bootstrap script missing")
@@ -171,7 +180,7 @@ class TestPages(AppTestCase):
 
     def test_theme_script_is_loaded_before_the_stylesheet(self):
         # it must run before first paint, otherwise the wrong theme flashes
-        for path in ("/login", "/register", "/chat", "/settings"):
+        for path in ("/login", "/register", "/chat", "/settings", "/call"):
             with self.subTest(path=path):
                 body = self.http.get(path).get_data(as_text=True)
                 self.assertLess(
@@ -250,6 +259,7 @@ class TestSystemPrompt(AppTestCase):
         self.assertIn("SAGE", prompt)
         self.assertIn("Always write your entire response in English.", prompt)
         self.assertIn("Memory data model", prompt)
+        self.assertNotIn("Voice delivery tags", prompt)
 
     def test_arabic_language_uses_the_arabic_prompt(self):
         fake = self.use_client()
@@ -287,6 +297,56 @@ class TestSystemPrompt(AppTestCase):
             headers=self.headers,
         )
         self.assertEqual(fake.payloads[-1][0]["content"], app_module.system_prompt("ar"))
+
+    def test_call_mode_uses_the_call_prompt(self):
+        fake = self.use_client()
+        response = self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hello"}], "mode": "call"},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = fake.payloads[-1]
+        self.assertEqual(payload[0]["content"], app_module.system_prompt("en", "call"))
+        self.assertIn("Voice Call Mode", payload[0]["content"])
+        self.assertIn("Memory data model", payload[0]["content"])
+        self.assertIn("Voice delivery tags", payload[0]["content"])
+        self.assertIn("[laughs]", payload[0]["content"])
+
+    def test_arabic_call_mode_uses_the_arabic_call_prompt(self):
+        fake = self.use_client()
+        self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "مرحبا"}],
+                  "language": "ar", "mode": "call"},
+            headers=self.headers,
+        )
+        self.assertEqual(
+            fake.payloads[-1][0]["content"], app_module.system_prompt("ar", "call")
+        )
+        self.assertIn("وضع المكالمة الصوتية", fake.payloads[-1][0]["content"])
+
+    def test_call_greeting_injects_a_server_side_turn(self):
+        fake = self.use_client()
+        response = self.http.post(
+            "/api/chat",
+            json={"mode": "call", "greeting": True},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = fake.payloads[-1]
+        self.assertEqual(payload[0]["role"], "system")
+        self.assertEqual(payload[1]["role"], "user")
+        self.assertEqual(payload[1]["content"], app_module.GREETING_TURNS["en"])
+
+    def test_unknown_mode_falls_back_to_chat(self):
+        fake = self.use_client()
+        self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hi"}], "mode": "klingon"},
+            headers=self.headers,
+        )
+        self.assertEqual(fake.payloads[-1][0]["content"], app_module.system_prompt("en"))
 
     def test_client_supplied_system_message_is_rejected(self):
         # a client cannot smuggle its own system prompt to override index 0
@@ -714,6 +774,55 @@ class TestStreamStop(AppTestCase):
         generator.close()  # what the WSGI server does when the browser goes away
         self.assertTrue(fake.upstream.closed)
         self.assertEqual(app_module._ACTIVE_STREAMS, {})
+
+
+class TestVoiceApi(AppTestCase):
+    def test_status_requires_auth(self):
+        response = self.http.get("/api/voice/status")
+        self.assertEqual(response.status_code, 401)
+
+    def test_status_reports_availability_without_a_token(self):
+        response = self.http.get("/api/voice/status", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertIn("available", body)
+        self.assertIn("voices", body)
+        self.assertNotIn("token", json.dumps(body).lower())
+
+    def test_speak_requires_auth(self):
+        response = self.http.post("/api/voice/speak", json={"text": "hi"})
+        self.assertEqual(response.status_code, 401)
+
+    def test_speak_returns_audio(self):
+        patcher = patch.object(app_module.voice, "synthesize", return_value=b"ID3FAKE")
+        fake = patcher.start()
+        self.addCleanup(patcher.stop)
+
+        response = self.http.post(
+            "/api/voice/speak",
+            json={"text": "Hello there.", "language": "en"},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "audio/mpeg")
+        self.assertEqual(response.data, b"ID3FAKE")
+        fake.assert_called_once()
+        self.assertEqual(fake.call_args.args[0], "Hello there.")
+        self.assertEqual(fake.call_args.kwargs["language"], "en")
+
+    def test_speak_maps_voice_errors(self):
+        error = app_module.voice.VoiceError("voice_token_expired", "expired", 503)
+        patcher = patch.object(app_module.voice, "synthesize", side_effect=error)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        response = self.http.post(
+            "/api/voice/speak",
+            json={"text": "Hello there."},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error"]["code"], "voice_token_expired")
 
 
 if __name__ == "__main__":
