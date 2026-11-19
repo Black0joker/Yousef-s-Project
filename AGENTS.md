@@ -108,6 +108,12 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   voice is down and callers can still type. A provider `401` for
   `detected_unusual_activity` maps to `voice_account_restricted`, not
   `voice_token_expired`.
+- A refreshed token can be valid (`/v1/user/subscription` returns 200) while
+  text-to-dialogue still returns `detected_unusual_activity`; that is an
+  ElevenLabs account restriction, not a refresh failure. Compare Firebase
+  `firebase.sign_in_provider` between the working browser token and the refresh
+  token: capture the refresh token from the same provider (for example sign in
+  with Google before copying `stsTokenManager.refreshToken`).
 - Voice routes are authenticated (`GET /api/voice/status`,
   `POST /api/voice/speak`); only `/call` is a public shell. Never log voice
   text, tokens, voice ids, or audio. `voice.speak` logs only `text_chars`,

@@ -418,6 +418,16 @@ banner when voice is unavailable. Text chat and typed call turns keep working
 when voice is down. ElevenLabs may also restrict an account (for example after
 unusual-activity detection), which is reported as `voice_account_restricted`.
 
+If a token copied from the browser works but the refreshed token gets
+`voice_account_restricted`, compare how the two sessions signed in. The
+refresh token carries a Firebase `sign_in_provider` claim (`google.com`,
+`password`, etc.); use a refresh token captured from the **same sign-in method**
+as the working web session. For a Google-based web session, sign in with Google
+before copying `stsTokenManager.refreshToken`. The restriction itself is on the
+ElevenLabs account, not on the refresh call: a refreshed token can return
+`200` from `/v1/user/subscription` while `/v1/text-to-dialogue/stream` still
+returns `detected_unusual_activity`.
+
 The server sends only assistant text to ElevenLabs. Voice text, tokens, and
 audio are never logged and never stored in chat history. One turn produces at
 most one request per text segment around tool calls; if a segment is longer
