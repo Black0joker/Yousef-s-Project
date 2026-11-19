@@ -78,6 +78,13 @@ LANGUAGE_DIRECTIVES = {
     "ar": "يجب أن تكون جميع ردودك باللغة العربية.",
 }
 
+#: Spoken call mode overrides the language directive: Arabic calls must use
+#: Egyptian colloquial, not Modern Standard or Gulf Arabic.
+CALL_LANGUAGE_DIRECTIVES = {
+    "en": "Always write your entire response in English.",
+    "ar": "اكتب كل ردودك بالعامية المصرية الطبيعية، مش بالفصحى ومش باللهجة السعودية.",
+}
+
 #: Prompt document per conversation mode. ``call`` makes SAGE speak as though
 #: it placed a phone call to the user; the call prompt files fall back to the
 #: chat persona when missing.
@@ -173,7 +180,8 @@ def system_prompt(language: str = DEFAULT_LANGUAGE, mode: str = DEFAULT_MODE) ->
     conversation = normalize_mode(mode)
     override = os.environ.get("TH_SYSTEM_PROMPT", "").strip()
     base = override or read_prompt(code, conversation)
-    directive = LANGUAGE_DIRECTIVES[code]
+    directives = CALL_LANGUAGE_DIRECTIVES if conversation == "call" else LANGUAGE_DIRECTIVES
+    directive = directives[code]
     parts = [base, memory.prompt_brief()]
     if conversation == "call":
         parts.append(voice.prompt_brief())

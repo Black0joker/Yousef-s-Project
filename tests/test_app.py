@@ -321,10 +321,12 @@ class TestSystemPrompt(AppTestCase):
                   "language": "ar", "mode": "call"},
             headers=self.headers,
         )
-        self.assertEqual(
-            fake.payloads[-1][0]["content"], app_module.system_prompt("ar", "call")
-        )
-        self.assertIn("وضع المكالمة الصوتية", fake.payloads[-1][0]["content"])
+        prompt = fake.payloads[-1][0]["content"]
+        self.assertEqual(prompt, app_module.system_prompt("ar", "call"))
+        self.assertIn("وضع المكالمة الصوتية", prompt)
+        self.assertIn("عامية مصرية", prompt)
+        self.assertIn("مش لهجة سعودية", prompt)
+        self.assertIn("بالعامية المصرية", prompt)
 
     def test_call_greeting_injects_a_server_side_turn(self):
         fake = self.use_client()

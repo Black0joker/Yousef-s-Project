@@ -231,8 +231,19 @@ class RefreshTests(VoiceTestCase):
         self.assertNotIn("old-token", text)
 
 
+class VoiceSelectionTests(VoiceTestCase):
+    def test_language_picks_the_right_default_voice(self):
+        self.assertEqual(voice.resolve_voice_id(None, "en"), "r1KmysJdVYZjJCm4mL3b")
+        self.assertEqual(voice.resolve_voice_id(None, "ar"), "L10lEremDiJfPicq5CPh")
+
+    def test_arabic_env_override_still_wins(self):
+        self.set_env(ELEVENLABS_VOICE_ID_AR="custom-arabic-voice")
+        self.assertEqual(voice.resolve_voice_id(None, "ar"), "custom-arabic-voice")
+
+
 class SynthesisTests(VoiceTestCase):
     def setUp(self):
+        super().setUp()
         self.token = fake_jwt({"exp": int(time.time()) + 3600})
         self.set_env(ELEVENLABS_TOKEN=self.token, ELEVENLABS_BASE_URL="https://example.test")
 

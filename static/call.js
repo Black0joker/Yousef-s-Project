@@ -263,7 +263,7 @@
     recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = lang === "ar" ? "ar-SA" : "en-US";
+    recognition.lang = lang === "ar" ? "ar-EG" : "en-US";
 
     recognition.onstart = function () {
       listening = true;
@@ -716,7 +716,7 @@
     } catch (err) {
       /* storage blocked */
     }
-    if (recognition) recognition.lang = lang === "ar" ? "ar-SA" : "en-US";
+    if (recognition) recognition.lang = lang === "ar" ? "ar-EG" : "en-US";
     applyLanguage();
   });
 

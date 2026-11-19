@@ -150,8 +150,11 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   `static/chat.js`.
 - Call mode is selected by `PROMPT_MODES["call"]` in `app.py` and uses
   `prompts/english-call.md` / `prompts/arabic-call.md`; a missing call file
-  falls back to the chat persona. Call turns are capped by `CALL_MAX_TOKENS`,
-  and `greeting: true` with no messages inserts `GREETING_TURNS` server-side.
+  falls back to the chat persona. Arabic call mode must stay **Egyptian
+  colloquial** (`CALL_LANGUAGE_DIRECTIVES["ar"]`), not Modern Standard or Gulf
+  Arabic, and `static/call.js` uses `ar-EG` for recognition. Call turns are
+  capped by `CALL_MAX_TOKENS`, and `greeting: true` with no messages inserts
+  `GREETING_TURNS` server-side.
 - `voice.prompt_brief()` (a delivery-tag cheat sheet from ElevenApi `TAGS.md`)
   is appended to call-mode system prompts, including under `TH_SYSTEM_PROMPT`.
   Keep it in sync with `voice.py` and `tests/test_voice.py` when the tag list

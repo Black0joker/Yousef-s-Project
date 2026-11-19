@@ -226,8 +226,8 @@ Config (all optional except the key):
 | `ELEVENLABS_UID` | — | optional Firebase user id for reference |
 | `ELEVENLABS_TOKEN` | — | fallback: short-lived access token; expires hourly |
 | `ELEVENLABS_BASE_URL` | `https://api.us.elevenlabs.io` | regional ElevenLabs host |
-| `ELEVENLABS_VOICE_ID` | `owl` voice | default voice id for spoken replies |
-| `ELEVENLABS_VOICE_ID_AR` | — | optional Arabic voice id |
+| `ELEVENLABS_VOICE_ID` | `r1KmysJdVYZjJCm4mL3b` | English voice id (the `owl` voice) |
+| `ELEVENLABS_VOICE_ID_AR` | `L10lEremDiJfPicq5CPh` | Arabic voice id |
 | `ELEVENLABS_STABILITY` | `0.5` | 0..1; lower is more expressive |
 | `ELEVENLABS_SIMILARITY` | `0.75` | 0..1; how tightly to hold the voice |
 

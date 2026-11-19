@@ -62,6 +62,9 @@ DEFAULT_VOICES: Dict[str, str] = {
 }
 DEFAULT_VOICE_NAME = "owl"
 
+#: English uses the owl voice; Arabic calls use its own voice by default.
+DEFAULT_VOICE_ID_AR = "L10lEremDiJfPicq5CPh"
+
 WEB_HEADERS = {
     "accept": "*/*",
     "accept-language": "en-US,en;q=0.8",
@@ -373,24 +376,23 @@ def token_state() -> Dict[str, Any]:
     }
 
 
+def _arabic_voice_id() -> str:
+    return _env_voice("ELEVENLABS_VOICE_ID_AR", "TH_VOICE_ID_AR") or DEFAULT_VOICE_ID_AR
+
+
 def voice_names() -> List[str]:
-    return sorted(DEFAULT_VOICES)
+    return sorted(set(DEFAULT_VOICES) | {"arabic"})
 
 
 def default_voice_name(language: str = "en") -> str:
-    if language == "ar" and _env_voice("ELEVENLABS_VOICE_ID_AR", "TH_VOICE_ID_AR"):
-        return "arabic"
-    return DEFAULT_VOICE_NAME
+    return "arabic" if language == "ar" else DEFAULT_VOICE_NAME
 
 
 def resolve_voice_id(name: Any = None, language: str = "en") -> str:
     """Resolve a friendly voice name or known id to a voice id."""
-    if language == "ar":
-        arabic = _env_voice("ELEVENLABS_VOICE_ID_AR", "TH_VOICE_ID_AR")
-        if arabic and (name is None or name in ("", "default", "arabic")):
-            return arabic
-
-    if name in (None, "", "default"):
+    if name in (None, "", "default", "arabic"):
+        if language == "ar":
+            return _arabic_voice_id()
         configured = _env_voice("ELEVENLABS_VOICE_ID", "TH_VOICE_ID")
         return configured or DEFAULT_VOICES[DEFAULT_VOICE_NAME]
 
@@ -399,10 +401,13 @@ def resolve_voice_id(name: Any = None, language: str = "en") -> str:
     cleaned = name.strip()
     if cleaned in DEFAULT_VOICES:
         return DEFAULT_VOICES[cleaned]
-    if cleaned in DEFAULT_VOICES.values():
+    if cleaned in DEFAULT_VOICES.values() or cleaned == DEFAULT_VOICE_ID_AR:
         return cleaned
     configured = _env_voice("ELEVENLABS_VOICE_ID", "TH_VOICE_ID")
     if cleaned and cleaned == configured:
+        return cleaned
+    configured_ar = _env_voice("ELEVENLABS_VOICE_ID_AR", "TH_VOICE_ID_AR")
+    if cleaned and cleaned == configured_ar:
         return cleaned
     raise VoiceError("voice_invalid_request", "Unknown voice.", 400)
 
