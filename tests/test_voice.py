@@ -168,6 +168,20 @@ class RefreshTests(VoiceTestCase):
         self.assertEqual(post.call_args.kwargs["data"]["refresh_token"], "refresh-1")
         self.assertEqual(post.call_args.kwargs["params"]["key"], "public-key")
 
+    def test_valid_manual_token_skips_refresh(self):
+        manual = fake_jwt({"exp": int(time.time()) + 3600})
+        self.set_env(ELEVENLABS_TOKEN=manual, ELEVENLABS_REFRESH_TOKEN="refresh-1")
+        with patch.object(voice.requests, "post", side_effect=AssertionError("must not refresh")):
+            self.assertEqual(voice._access_token(), manual)
+
+    def test_valid_cached_token_is_reused_until_it_expires(self):
+        cached = fake_jwt({"exp": int(time.time()) + 3600})
+        voice._cached_access_token = cached
+        voice._cached_access_expiry = time.time() + 3600
+        self.set_env(ELEVENLABS_REFRESH_TOKEN="refresh-1")
+        with patch.object(voice.requests, "post", side_effect=AssertionError("must not refresh")):
+            self.assertEqual(voice._access_token(), cached)
+
     def test_synthesis_uses_the_refreshed_token(self):
         expired = fake_jwt({"exp": int(time.time()) - 60})
         fresh = fake_jwt({"exp": int(time.time()) + 3600})

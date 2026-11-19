@@ -44,8 +44,9 @@ DEFAULT_FIREBASE_API_KEY = "AIzaSyBSsRE_1Os04-bxpd5JTLIniy3UK4OqKys"
 FIREBASE_TOKEN_URL = "https://securetoken.googleapis.com/v1/token"
 ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
-#: Mint a new access token a minute before the old one actually dies.
-REFRESH_SKEW_SECONDS = 60.0
+#: Reuse a cached access token until it actually expires; a request that lands
+#: after expiry is retried once with a freshly refreshed token.
+REFRESH_SKEW_SECONDS = 0.0
 _FIREBASE_TIMEOUT = 30.0
 
 _TOKEN_LOCK = threading.Lock()
