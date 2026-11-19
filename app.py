@@ -33,6 +33,7 @@ import auth
 import conversations
 import logging_config
 import memory
+import schedule
 import voice
 from core import Message, TokenHarbor, TokenHarborError
 
@@ -114,6 +115,7 @@ logging_config.init_request_logging(app)
 auth.init_db()
 memory.init_db()
 conversations.init_db()
+schedule.init_db()
 auth.init_app(app)
 
 
@@ -185,7 +187,7 @@ def system_prompt(language: str = DEFAULT_LANGUAGE, mode: str = DEFAULT_MODE) ->
     base = override or read_prompt(code, conversation)
     directives = CALL_LANGUAGE_DIRECTIVES if conversation == "call" else LANGUAGE_DIRECTIVES
     directive = directives[code]
-    parts = [base, memory.prompt_brief()]
+    parts = [base, memory.prompt_brief(), schedule.prompt_brief()]
     if conversation == "call":
         parts.append(voice.prompt_brief())
     parts.append(directive)
@@ -275,6 +277,29 @@ def memory_toolset():
         display_name=display_name,
     )
     return tools, log_tool_handlers(handlers, user_id=user_id)
+
+
+def schedule_toolset():
+    """Schedule tool schemas/handlers bound to the authenticated user."""
+    claims = auth.current_user() or {}
+    user_id = claims.get("id")
+    if user_id is None:
+        raise auth.AuthError("unauthorized", "Authentication required.", 401)
+
+    tools, handlers = schedule.toolset(user_id, connection=auth.get_db())
+    return tools, log_tool_handlers(handlers, user_id=user_id)
+
+
+def agent_toolset():
+    """Every tool the model may call: personal memory plus the schedule."""
+    memory_tools, memory_handlers = memory_toolset()
+    schedule_tools, schedule_handlers = schedule_toolset()
+    # Tool names are unique across the two sets; a clash would silently
+    # overwrite a handler, so fail loudly instead.
+    overlap = set(memory_handlers) & set(schedule_handlers)
+    if overlap:
+        raise RuntimeError(f"duplicate tool names: {sorted(overlap)}")
+    return memory_tools + schedule_tools, {**memory_handlers, **schedule_handlers}
 
 
 # --- active generations ---------------------------------------------------
@@ -452,6 +477,12 @@ def memory_page():
     return render_template("memory.html")
 
 
+@app.get("/schedule")
+def schedule_page():
+    """Schedule shell: today, upcoming appointments, and routines."""
+    return render_template("schedule.html")
+
+
 # --- authentication API ---------------------------------------------------
 
 
@@ -575,7 +606,7 @@ def api_chat():
             "message_count": max(0, len(payload) - 1),
         },
     )
-    tools, handlers = memory_toolset()
+    tools, handlers = agent_toolset()
     call_params = {"max_tokens": CALL_MAX_TOKENS} if mode == "call" else {}
     try:
         reply = client.run_tools(
@@ -655,7 +686,7 @@ def api_chat_stream():
             "message_count": max(0, len(payload) - 1),
         },
     )
-    tools, handlers = memory_toolset()
+    tools, handlers = agent_toolset()
     stream_id, cancel, entry = register_stream(user_id)
 
     def on_open(response: Any) -> None:
@@ -1052,6 +1083,120 @@ def api_set_consent(kind: str):
     except memory.MemoryError as exc:
         return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
     return jsonify(result)
+
+
+# --- schedule API ---------------------------------------------------------
+
+
+@app.get("/api/appointments")
+def api_appointments():
+    """The caller's appointments, soonest first."""
+    claims = auth.current_user() or {}
+    items = schedule.list_appointments(
+        claims.get("id"),
+        start=request.args.get("start"),
+        end=request.args.get("end"),
+        include_done=request.args.get("include_done", "").lower() in ("1", "true", "yes"),
+        limit=request.args.get("limit"),
+    )
+    return jsonify({"appointments": items})
+
+
+@app.get("/api/appointments/today")
+def api_appointments_today():
+    """Everything on the caller's local day.
+
+    ``tz_offset`` is minutes east of UTC, which is what the browser gets from
+    ``-new Date().getTimezoneOffset()``. Omit it for UTC.
+    """
+    claims = auth.current_user() or {}
+    return jsonify(
+        schedule.today_appointments(claims.get("id"), request.args.get("tz_offset"))
+    )
+
+
+@app.post("/api/appointments")
+def api_create_appointment():
+    """Create an appointment from the UI (the model uses save_appointment)."""
+    claims = auth.current_user() or {}
+    data = request.get_json(silent=True) or {}
+    try:
+        appointment = schedule.save_appointment(
+            claims.get("id"),
+            data.get("title"),
+            data.get("starts_at"),
+            ends_at=data.get("ends_at"),
+            place=data.get("place"),
+            notes=data.get("notes"),
+        )
+    except memory.MemoryError as exc:
+        return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
+    return jsonify(appointment), 201
+
+
+@app.patch("/api/appointments/<appointment_id>")
+def api_update_appointment(appointment_id: str):
+    """Change an appointment's status (pending/done/cancelled)."""
+    claims = auth.current_user() or {}
+    data = request.get_json(silent=True) or {}
+    try:
+        appointment = schedule.set_appointment_status(
+            claims.get("id"), appointment_id, data.get("status")
+        )
+    except memory.MemoryError as exc:
+        return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
+    if appointment is None:
+        return (
+            jsonify({"error": {"code": "not_found", "message": "Appointment not found."}}),
+            404,
+        )
+    return jsonify(appointment)
+
+
+@app.delete("/api/appointments/<appointment_id>")
+def api_delete_appointment(appointment_id: str):
+    claims = auth.current_user() or {}
+    if not schedule.delete_appointment(claims.get("id"), appointment_id):
+        return (
+            jsonify({"error": {"code": "not_found", "message": "Appointment not found."}}),
+            404,
+        )
+    return "", 204
+
+
+@app.get("/api/routines")
+def api_routines():
+    claims = auth.current_user() or {}
+    items = schedule.list_routines(
+        claims.get("id"),
+        include_inactive=request.args.get("include_inactive", "").lower()
+        in ("1", "true", "yes"),
+    )
+    return jsonify({"routines": items})
+
+
+@app.post("/api/routines")
+def api_create_routine():
+    claims = auth.current_user() or {}
+    data = request.get_json(silent=True) or {}
+    try:
+        routine = schedule.save_routine(
+            claims.get("id"),
+            data.get("label"),
+            data.get("cadence"),
+            window=data.get("window"),
+        )
+    except memory.MemoryError as exc:
+        return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
+    return jsonify(routine), 201
+
+
+@app.delete("/api/routines/<routine_id>")
+def api_delete_routine(routine_id: str):
+    claims = auth.current_user() or {}
+    if not schedule.delete_routine(claims.get("id"), routine_id):
+        return jsonify({"error": {"code": "not_found", "message": "Routine not found."}}), 404
+    return "", 204
 
 
 # --- location API ---------------------------------------------------------

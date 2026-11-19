@@ -18,6 +18,9 @@ behavior changes. This file covers workflow and non-obvious wiring.
 - `conversations.py` — server-side transcript persistence: `conversations` /
   `conversation_turns`, the read API helpers, and the request-scoped recorders.
   Writes are best effort and must never fail a chat request.
+- `schedule.py` — appointments, tasks, and routines: schema, UTC-normalized
+  timestamps, the `today` window, and the `save_appointment` /
+  `list_appointments` / `complete_appointment` tool schemas and handlers.
 - `voice.py` — ElevenLabs web-request client for call mode: session token
   expiry, payload/chunking, MP3 synthesis, and redacted logging.
 - `logging_config.py` — readable text logging by default, JSON option, request
@@ -148,6 +151,30 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - `tests/test_conversations.py` covers the module and
   `tests/test_app.py::TestConversationPersistence` covers the routes.
 
+### Schedule
+
+- `app.py` initialises four stores in order: `auth` → `memory` →
+  `conversations` → `schedule`. New appointment/routine tables belong in
+  `schedule.SCHEMA_SQL`, not `memory.py`.
+- `agent_toolset()` in `app.py` merges the memory and schedule tools and raises
+  on a duplicate tool name. Add a new tool group there, not by hand in each
+  chat route; both routes call `agent_toolset()`.
+- **Every timestamp is stored UTC** and normalized through
+  `memory._timestamp()`. The client renders local time. `today_appointments()`
+  takes `tz_offset` in minutes **east** of UTC (what `-getTimezoneOffset()`
+  returns); never use the server's local timezone to decide what "today" means.
+- `list_appointments()` hides `done` and `cancelled` rows unless asked. An
+  appointment overlaps a window when it starts before the upper bound and ends
+  after the lower one, so multi-day events are not dropped.
+- Schedule tool handlers filter arguments through `_tool_args()` before calling
+  the model-facing functions. A model that invents `user_id` must not reach the
+  handler — `tests/test_schedule.py` asserts the spoofed id is ignored. Follow
+  the same pattern for any new tool.
+- Titles, places, and notes are personal data: SQL goes through
+  `memory._execute`, and the schedule logs carry counts and flags only.
+- `tests/test_app.py::TestMemoryTools` pins the exact tool-name list offered to
+  the model. Adding a tool means updating that assertion.
+
 ### Logging
 
 - Route every memory SQL statement through `_execute(...)`: it emits
@@ -178,10 +205,11 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - All routes are guarded by the auth middleware except `PUBLIC_PATHS` and
   `PUBLIC_PREFIXES` in `auth.py`. Add new public routes there; API paths get a
   JSON 401, page paths redirect to `/login`.
-- `/chat`, `/call`, `/settings`, and `/memory` are intentionally public, data-free
-  HTML shells; authentication and user data come from `/api/auth/me`, and every
-  write goes through the guarded API (`PATCH /api/auth/profile`,
-  `POST /api/auth/password`, `DELETE /api/memory/...`).
+- `/chat`, `/call`, `/settings`, `/memory`, and `/schedule` are intentionally
+  public, data-free HTML shells; authentication and user data come from
+  `/api/auth/me`, and every write goes through the guarded API
+  (`PATCH /api/auth/profile`, `POST /api/auth/password`, `DELETE /api/memory/...`,
+  `POST /api/appointments`).
 - Profile updates reissue the JWT because `full_name`/`email` live in the claims;
   the client must `Session.save(...)` the returned token. Changing the email
   requires `current_password`, and both update paths use `auth.AuthError` codes.
@@ -293,6 +321,12 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   list, per-item delete, export, "forget everything", and consent toggles. Every
   call uses `Session.authFetch`; deletion asks for `window.confirm` first, and
   `DELETE /api/memory` must send `{"confirm": true}` or it answers `400`.
+- `templates/schedule.html` + `static/schedule-page.js` are the `/schedule`
+  shell: today, upcoming, add-appointment, and routines.
+  `static/schedule-reminder.js` adds the in-app banner on `/chat` (next
+  appointment today) and is silent on any failure. `datetime-local` has no
+  zone, so the page converts it with `new Date(value).toISOString()` before
+  POSTing, and sends `tz_offset` for the "today" query.
 - `static/location.js` is loaded by `/chat` and `/call` only, after
   `session.js`. It pings `/api/location` every 5s, skips a tick while a request
   is in flight, pauses on `visibilitychange`, and stops permanently on

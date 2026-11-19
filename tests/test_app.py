@@ -156,8 +156,11 @@ class TestPages(AppTestCase):
         self.assertIn(b"chat.js", response.data)
         self.assertIn(b"session.js", response.data)
         self.assertIn(b"location.js", response.data)
+        self.assertIn(b"schedule-reminder.js", response.data)
+        self.assertIn(b'id="schedule-reminder"', response.data)
         self.assertIn(b'href="/call"', response.data)
         self.assertIn(b'href="/memory"', response.data)
+        self.assertIn(b'href="/schedule"', response.data)
 
     def test_chat_page_has_language_toggle(self):
         body = self.http.get("/chat").data
@@ -506,8 +509,16 @@ class TestMemoryTools(AppTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["reply"], "ok")
         names = [schema["function"]["name"] for schema in fake.tools]
-        self.assertEqual(names, ["save_memory", "recall_memory", "get_name"])
-        self.assertEqual(set(fake.handlers), {"save_memory", "recall_memory", "get_name"})
+        expected = [
+            "save_memory",
+            "recall_memory",
+            "get_name",
+            "save_appointment",
+            "list_appointments",
+            "complete_appointment",
+        ]
+        self.assertEqual(names, expected)
+        self.assertEqual(set(fake.handlers), set(expected))
 
     def test_stream_forwards_tool_lifecycle_without_arguments(self):
         events = [
@@ -534,7 +545,8 @@ class TestMemoryTools(AppTestCase):
         self.assertEqual(frames[2], {"delta": "Saved."})
         self.assertTrue(frames[3]["done"])
         self.assertEqual([schema["function"]["name"] for schema in fake.tools],
-                         ["save_memory", "recall_memory", "get_name"])
+                         ["save_memory", "recall_memory", "get_name",
+                          "save_appointment", "list_appointments", "complete_appointment"])
 
     def test_stream_get_name_returns_the_jwt_name(self):
         class ToolClient:
@@ -1317,6 +1329,166 @@ class TestLocationConsent(AppTestCase):
             "/api/location", json={"latitude": 999, "longitude": 0}, headers=self.headers
         )
         self.assertEqual(response.status_code, 400)
+
+
+    def test_schedule_page_renders_as_public_shell(self):
+        response = self.http.get("/schedule")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"schedule-page.js", response.data)
+        self.assertIn(b"session.js", response.data)
+        self.assertIn(b'id="today-list"', response.data)
+        self.assertIn(b'id="routine-list"', response.data)
+
+    def test_schedule_page_requires_no_token(self):
+        # a public shell, like /chat and /memory
+        self.assertEqual(self.http.get("/schedule").status_code, 200)
+
+
+class TestScheduleApi(AppTestCase):
+    """Appointment and routine endpoints."""
+
+    def tomorrow(self):
+        from datetime import datetime, timedelta, timezone
+
+        moment = datetime.now(timezone.utc) + timedelta(days=1)
+        return moment.isoformat(timespec="seconds")
+
+    def create(self, **overrides):
+        payload = {"title": "Dentist", "starts_at": self.tomorrow()}
+        payload.update(overrides)
+        return self.http.post("/api/appointments", json=payload, headers=self.headers)
+
+    def test_create_and_list(self):
+        created = self.create(place="Clinic")
+        self.assertEqual(created.status_code, 201)
+        body = created.get_json()
+        self.assertEqual(body["status"], "pending")
+        self.assertIn("id", body)
+
+        listing = self.http.get("/api/appointments", headers=self.headers).get_json()
+        self.assertEqual([item["title"] for item in listing["appointments"]], ["Dentist"])
+
+    def test_create_rejects_a_bad_payload(self):
+        self.assertEqual(self.create(starts_at="not-a-date").status_code, 400)
+        self.assertEqual(self.create(title="").status_code, 400)
+
+    def test_today_accepts_a_timezone_offset(self):
+        self.create()
+        response = self.http.get(
+            "/api/appointments/today?tz_offset=120", headers=self.headers
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertIn("from", body)
+        self.assertIn("to", body)
+        self.assertIn("appointments", body)
+
+    def test_patch_status(self):
+        created = self.create().get_json()
+        response = self.http.patch(
+            f"/api/appointments/{created['id']}",
+            json={"status": "done"},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["status"], "done")
+
+    def test_patch_rejects_an_unknown_status(self):
+        created = self.create().get_json()
+        response = self.http.patch(
+            f"/api/appointments/{created['id']}",
+            json={"status": "archived"},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_patch_unknown_appointment_is_404(self):
+        response = self.http.patch(
+            "/api/appointments/nope", json={"status": "done"}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_delete(self):
+        created = self.create().get_json()
+        response = self.http.delete(
+            f"/api/appointments/{created['id']}", headers=self.headers
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(
+            self.http.get("/api/appointments", headers=self.headers).get_json()["appointments"],
+            [],
+        )
+
+    def test_appointments_are_scoped_to_the_caller(self):
+        created = self.create().get_json()
+
+        other = dict(CREDENTIALS)
+        other["email"] = "scheduler@example.com"
+        token = self.http.post("/api/auth/register", json=other).get_json()["token"]
+        other_headers = {"Authorization": "Bearer " + token}
+
+        self.assertEqual(
+            self.http.get("/api/appointments", headers=other_headers).get_json()["appointments"],
+            [],
+        )
+        self.assertEqual(
+            self.http.delete(
+                f"/api/appointments/{created['id']}", headers=other_headers
+            ).status_code,
+            404,
+        )
+
+    def test_routines_crud(self):
+        created = self.http.post(
+            "/api/routines",
+            json={"label": "Morning walk", "cadence": "daily", "window": "08:00-09:00"},
+            headers=self.headers,
+        )
+        self.assertEqual(created.status_code, 201)
+        routine = created.get_json()
+        self.assertTrue(routine["active"])
+
+        listing = self.http.get("/api/routines", headers=self.headers).get_json()
+        self.assertEqual([item["label"] for item in listing["routines"]], ["Morning walk"])
+
+        deleted = self.http.delete(f"/api/routines/{routine['id']}", headers=self.headers)
+        self.assertEqual(deleted.status_code, 204)
+
+    def test_routine_requires_label_and_cadence(self):
+        response = self.http.post(
+            "/api/routines", json={"label": "", "cadence": "daily"}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_schedule_api_requires_auth(self):
+        self.assertEqual(self.http.get("/api/appointments").status_code, 401)
+        self.assertEqual(self.http.get("/api/appointments/today").status_code, 401)
+        self.assertEqual(self.http.post("/api/appointments", json={}).status_code, 401)
+        self.assertEqual(self.http.get("/api/routines").status_code, 401)
+
+    def test_schedule_brief_is_in_the_system_prompt(self):
+        self.use_client(FakeClient(reply="ok"))
+        self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers=self.headers,
+        )
+        prompt = app_module.system_prompt("en", "chat")
+        self.assertIn("save_appointment", prompt)
+        self.assertIn("list_appointments", prompt)
+        self.assertIn("complete_appointment", prompt)
+
+    def test_schedule_tools_are_offered_to_the_model(self):
+        fake = self.use_client(FakeClient(reply="ok"))
+        self.http.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers=self.headers,
+        )
+        names = {schema["function"]["name"] for schema in fake.tools}
+        self.assertLessEqual(
+            {"save_appointment", "list_appointments", "complete_appointment"}, names
+        )
 
 
 if __name__ == "__main__":

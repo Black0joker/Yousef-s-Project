@@ -185,6 +185,35 @@ so no position is sent until the browser itself allows it.
 is off, so the `/chat` and `/call` pings stop storing anything until the user
 turns it back on in `/memory`.
 
+## Appointments, tasks, and routines
+
+Memory holds durable facts; scheduled things need a different shape. `schedule.py`
+adds two tables, both scoped to the signed-in user:
+
+- `appointments` — `title`, `starts_at`, optional `ends_at`, `place`, `notes`,
+  and a `status` of `pending`, `done`, or `cancelled`.
+- `routines` — a repeating habit with `label`, `cadence` (e.g. `daily`), and an
+  optional `window` (e.g. `08:00-09:00`).
+
+**Timezones.** Every timestamp is stored as ISO-8601 **UTC**. A client sending
+`2026-05-04T16:00:00+02:00` is stored as `2026-05-04T14:00:00Z` and rendered in
+the user's local time. `GET /api/appointments/today` takes `tz_offset` in
+minutes east of UTC (`-new Date().getTimezoneOffset()`) so "today" means the
+user's day, not the server's.
+
+**Listing.** `GET /api/appointments` returns upcoming items soonest-first.
+Completed and cancelled items are hidden unless `include_done` is set. An
+appointment that started earlier but ends later still appears in a window, so a
+multi-day event is not lost.
+
+**Reminders** are in-app only: `/chat` shows a banner with the next appointment
+today (`static/schedule-reminder.js`). There is no push or email delivery.
+
+**Model tools.** The chat model gets `save_appointment`, `list_appointments`, and
+`complete_appointment` alongside the memory tools. Anything with a date or time
+should go to `save_appointment`, not `save_memory`. Tool handlers bind the user
+id server-side and drop any model-supplied `user_id`.
+
 ## Accounts & authentication
 
 Accounts live in a small SQLite database (`instance/app.db`, override with
@@ -224,6 +253,16 @@ Logging in returns a **JWT** (HS256, 7 days) that the browser keeps in
 | `DELETE` | `/api/memory` | `confirm: true` | `200 {deleted}` |
 | `GET` | `/api/consents` | – | `200 {consents}` |
 | `PUT` | `/api/consents/<kind>` | `granted` | `200 {kind, granted, ...}` |
+| `GET` | `/api/appointments` | – | `200 {appointments}` |
+| `GET` | `/api/appointments/today` | `tz_offset`* | `200 {from, to, appointments}` |
+| `POST` | `/api/appointments` | `title, starts_at, ...` | `201 {appointment}` |
+| `PATCH` | `/api/appointments/<id>` | `status` | `200 {appointment}` |
+| `DELETE` | `/api/appointments/<id>` | – | `204` / `404` |
+| `GET` | `/api/routines` | – | `200 {routines}` |
+| `POST` | `/api/routines` | `label, cadence, window` | `201 {routine}` |
+| `DELETE` | `/api/routines/<id>` | – | `204` / `404` |
+
+\* `tz_offset` is minutes **east** of UTC, i.e. `-new Date().getTimezoneOffset()`.
 
 \* `current_password` is required only when the email address actually changes.
 
