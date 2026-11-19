@@ -164,6 +164,14 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 - `delete_turn()` removes a user turn **and the assistant turn that followed
   it**, matching the bubble-delete rule. It resolves the follow-up by `rowid`, so
   do not rely on timestamps (they can collide within a second).
+- `delete_all_conversations()` backs "Clear". It must delete **every** thread,
+  not just the current one: databases created before the single-thread change
+  hold one conversation per message, and deleting only the newest makes an old
+  thread reappear on the next load.
+- The page does **not** refetch after each reply. It adopts
+  `{user_turn_id, assistant_turn_id}` from the `saved` SSE frame, and falls back
+  to `loadThread()` only on first load or when persistence failed. Deleting and
+  clearing also update the DOM locally instead of reloading.
 - `current_conversation()` returns the newest thread and creates one if none.
   This app has exactly one ongoing thread per account.
 - Every conversation and turn row is filtered by `user_id`, and the write path
@@ -390,9 +398,16 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 
 - SSE clients expect `{"delta"}` / `{"reasoning"}` frames, transient
   `{"tool": {"name": ..., "status": "start"|"end", "ok": ...}}` frames, a final
-  `{"done": ...}` frame, an optional `{"stopped": true}` frame, and the literal
-  `data: [DONE]` terminator. `TokenHarbor.run_tools_events()` emits the tool
-  lifecycle; the app forwards names/status only, never tool arguments or results.
+  `{"done": ...}` frame, an optional `{"stopped": true}` frame, a
+  `{"saved": {conversation_id, user_turn_id, assistant_turn_id}}` frame, and the
+  literal `data: [DONE]` terminator. `TokenHarbor.run_tools_events()` emits the
+  tool lifecycle; the app forwards names/status only, never tool arguments or
+  results.
+- The `saved` frame exists so the page can attach real turn ids to the bubbles it
+  already rendered and skip a refetch after every reply. Emit it **after** the
+  `finally` (so the ids exist) but only when `reason != "stopped"` — a stopped
+  turn was deleted, so there is nothing to adopt. Anyone adding a frame must keep
+  `parse_sse` consumers and `tests/test_app.py` passing.
 - Stopping is id-based: the stream response carries `X-Stream-ID`, and
   `POST /api/chat/stop {"id": ...}` sets that entry's `threading.Event` and calls
   the stored provider `response.close`. `_ACTIVE_STREAMS` in `app.py` is

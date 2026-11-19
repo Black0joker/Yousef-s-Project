@@ -805,6 +805,7 @@ def api_chat_stream():
         stopped = False
         answer: List[str] = []
         tool_calls: List[Dict[str, Any]] = []
+        assistant_turn: Optional[Dict[str, Any]] = None
         call_params = {"max_tokens": CALL_MAX_TOKENS} if mode == "call" else {}
         events = client.run_tools_events(
             messages=payload,
@@ -925,7 +926,7 @@ def api_chat_stream():
             else:
                 # Record the reply even when it errored or the browser vanished:
                 # a missing turn is worse than a flagged one.
-                conversations.record_assistant_turn(
+                assistant_turn = conversations.record_assistant_turn(
                     user_id,
                     conversation_id,
                     "".join(answer),
@@ -946,6 +947,18 @@ def api_chat_stream():
                     "outcome": outcome,
                     "error_code": error_code,
                 },
+            )
+        # Hand the client the ids it needs to delete these bubbles later, so it
+        # does not have to refetch the whole thread after every reply.
+        if reason != "stopped":
+            yield sse(
+                {
+                    "saved": {
+                        "conversation_id": conversation_id,
+                        "user_turn_id": (user_turn or {}).get("id"),
+                        "assistant_turn_id": (assistant_turn or {}).get("id"),
+                    }
+                }
             )
         yield "data: [DONE]\n\n"
 
@@ -1007,6 +1020,19 @@ def api_conversation_detail(conversation_id: str):
             404,
         )
     return jsonify(detail)
+
+
+@app.delete("/api/conversations")
+def api_conversations_clear_all():
+    """Clear every thread for the caller ("Clear" in the UI).
+
+    Deletes all of them, not just the current one: older databases hold one
+    conversation per message, and leaving those behind would resurrect an old
+    thread on the next load.
+    """
+    claims = auth.current_user() or {}
+    conversations.delete_all_conversations(claims.get("id"))
+    return "", 204
 
 
 @app.delete("/api/conversations/<conversation_id>")

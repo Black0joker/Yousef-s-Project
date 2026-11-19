@@ -447,6 +447,37 @@ def delete_conversation(
         memory._current_user.reset(token)
 
 
+def delete_all_conversations(
+    user_id: Any, connection: Optional[sqlite3.Connection] = None
+) -> int:
+    """Remove every thread and turn for one account.
+
+    "Clear" must not merely delete the newest thread: databases created before
+    the single-thread change hold many one-message conversations, and deleting
+    only the current one would make an older thread pop back on the next load.
+    """
+    key = _user_id(user_id)
+    token = memory._current_user.set(key)
+    try:
+        with memory._db(connection) as db:
+            _execute(
+                db,
+                "DELETE FROM conversation_turns WHERE user_id = ?",
+                (key,),
+                operation="turn.delete_all",
+            )
+            cursor = _execute(
+                db,
+                "DELETE FROM conversations WHERE user_id = ?",
+                (key,),
+                operation="conversation.delete_all",
+            )
+            db.commit()
+            return cursor.rowcount if cursor.rowcount > 0 else 0
+    finally:
+        memory._current_user.reset(token)
+
+
 def append_turn(
     user_id: Any,
     conversation_id: str,

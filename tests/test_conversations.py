@@ -407,6 +407,37 @@ class ServerSideThreadTestCase(unittest.TestCase):
             conversations.get_turns(self.user, fresh["id"], connection=self.conn), []
         )
 
+    def test_deleting_all_conversations_removes_every_thread(self):
+        # simulate the old one-conversation-per-message layout
+        for _ in range(3):
+            conversation = conversations.create_conversation(self.user, connection=self.conn)
+            conversations.append_turn(
+                self.user, conversation["id"], "user", "hi", connection=self.conn
+            )
+
+        removed = conversations.delete_all_conversations(self.user, connection=self.conn)
+        self.assertGreaterEqual(removed, 3)
+        self.assertEqual(
+            conversations.list_conversations(self.user, connection=self.conn), []
+        )
+
+        fresh = conversations.current_conversation(self.user, connection=self.conn)
+        self.assertEqual(
+            conversations.get_turns(self.user, fresh["id"], connection=self.conn), []
+        )
+
+    def test_deleting_all_conversations_leaves_other_accounts_alone(self):
+        self._thread()
+        other = conversations.current_conversation(self.other, connection=self.conn)
+        conversations.append_turn(
+            self.other, other["id"], "user", "theirs", connection=self.conn
+        )
+
+        conversations.delete_all_conversations(self.user, connection=self.conn)
+
+        theirs = conversations.get_turns(self.other, other["id"], connection=self.conn)
+        self.assertEqual([turn["content"] for turn in theirs], ["theirs"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

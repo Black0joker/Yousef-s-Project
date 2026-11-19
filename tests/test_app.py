@@ -497,7 +497,10 @@ class TestStreaming(AppTestCase):
         self.assertEqual(response.status_code, 200)  # the stream had already started
         frames = parse_sse(response.get_data(as_text=True))
         self.assertEqual(frames[0], {"delta": "par"})
-        self.assertEqual(frames[-1]["error"]["code"], "service_unavailable")
+        errors = [frame for frame in frames if "error" in frame]
+        self.assertEqual(errors[-1]["error"]["code"], "service_unavailable")
+        # the ids frame still follows, so the client can reconcile without refetch
+        self.assertIn("saved", frames[-1])
 
 
 class TestMemoryTools(AppTestCase):
@@ -1935,6 +1938,56 @@ class TestServerSideChat(AppTestCase):
         fresh = self.current()
         self.assertNotEqual(fresh["conversation"]["id"], conversation_id)
         self.assertEqual(fresh["turns"], [])
+
+    def test_streaming_returns_the_saved_turn_ids(self):
+        # the client attaches these instead of refetching the thread
+        events = [
+            {"type": "delta", "content": "hi"},
+            {"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []},
+        ]
+        fake = self.use_client(FakeClient(events=events))
+        response = self.http.post(
+            "/api/chat/stream", json={"message": "hello"}, headers=self.headers
+        )
+        frames = parse_sse(response.get_data(as_text=True))
+        saved = frames[-1]["saved"]
+        self.assertTrue(saved["conversation_id"])
+        self.assertTrue(saved["user_turn_id"])
+        self.assertTrue(saved["assistant_turn_id"])
+
+        turns = self.current()["turns"]
+        self.assertEqual([turn["id"] for turn in turns], [saved["user_turn_id"], saved["assistant_turn_id"]])
+
+    def test_clearing_deletes_every_thread(self):
+        # older databases hold one conversation per message; none may survive
+        self.use_client(FakeClient(reply="once"))
+        self.http.post("/api/chat", json={"message": "one"}, headers=self.headers)
+        self.use_client(FakeClient(reply="twice"))
+        self.http.post("/api/chat", json={"message": "two"}, headers=self.headers)
+
+        response = self.http.delete("/api/conversations", headers=self.headers)
+        self.assertEqual(response.status_code, 204)
+
+        self.assertEqual(self.http.get("/api/conversations", headers=self.headers).get_json()["conversations"], [])
+        fresh = self.current()
+        self.assertEqual(fresh["turns"], [])
+
+    def test_clearing_requires_auth(self):
+        self.assertEqual(self.http.delete("/api/conversations").status_code, 401)
+
+    def test_clearing_leaves_another_account_alone(self):
+        self.use_client(FakeClient(reply="mine"))
+        self.http.post("/api/chat", json={"message": "keep"}, headers=self.headers)
+
+        other = dict(CREDENTIALS)
+        other["email"] = "other-clear@example.com"
+        token = self.http.post("/api/auth/register", json=other).get_json()["token"]
+        other_headers = {"Authorization": "Bearer " + token}
+
+        self.assertEqual(
+            self.http.delete("/api/conversations", headers=other_headers).status_code, 204
+        )
+        self.assertEqual(len(self.current()["turns"]), 2)
 
     def test_another_account_cannot_delete_my_turns(self):
         self.use_client(FakeClient(reply="answer"))

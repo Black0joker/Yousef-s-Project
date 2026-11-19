@@ -124,8 +124,9 @@ Two tables hold it:
 | `GET` | `/api/conversations/current` | `200 {conversation, turns}`; creates the thread on first use |
 | `GET` | `/api/conversations` | `200 {conversations: [...]}` newest first |
 | `GET` | `/api/conversations/<id>` | `200 {conversation, turns}` or `404 not_found` |
+| `DELETE` | `/api/conversations` | `204`; deletes every thread for the caller ("Clear") |
 | `DELETE` | `/api/conversations/<id>/turns/<turn_id>` | `204`; a user turn also deletes its reply |
-| `DELETE` | `/api/conversations/<id>` | `204`; deletes the thread and its turns |
+| `DELETE` | `/api/conversations/<id>` | `204`; deletes one thread and its turns |
 
 **There is one ongoing thread per account.** `GET /api/conversations/current`
 returns the most recent one and creates it if the user has none.
@@ -144,13 +145,21 @@ works for the call page, which keeps its own in-memory history.
 
 Behaviour worth knowing:
 
-- **Deleting a message deletes it from the database** and the page re-renders
-  from the server. Removing a user message also removes the assistant reply that
+- **Deleting a message deletes it from the database** and the bubble is removed
+  from the page. Removing a user message also removes the assistant reply that
   followed it, matching the bubble rule in the UI.
-- **"Clear" deletes the thread**, and the next load starts a fresh one.
+- **"Clear" deletes every thread** for the account, not just the current one. A
+  database created before the single-thread change holds one conversation per
+  message, so deleting only the newest would make an old thread reappear on the
+  next load.
 - **Stopping a reply deletes the pair.** The UI rolls a stopped turn back, so the
   stored rows go too. A dropped connection is *not* a rollback: the user turn
   and any partial reply are kept and flagged `outcome: "stopped"`.
+- **No refetch after a reply.** The stream ends with a `{"saved": {...}}` frame
+  carrying `conversation_id`, `user_turn_id`, and `assistant_turn_id`. The page
+  attaches those to the bubbles it already rendered, so sending a message costs
+  one request instead of two. It only reloads the thread on first load, or if
+  persistence failed and no ids came back.
 
 - **Persistence is best effort.** A database error while recording a turn never
   fails the reply the user is waiting for.

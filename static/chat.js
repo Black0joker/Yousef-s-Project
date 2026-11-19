@@ -259,6 +259,15 @@
 
   // --- message rendering --------------------------------------------------
 
+  // Give an optimistic bubble the id the server stored, so its delete button
+  // targets the real row without a refetch.
+  function adoptId(parts, id) {
+    if (!parts || !parts.row || !id) return;
+    parts.row.setAttribute("data-msg-id", id);
+    var button = parts.row.querySelector("[data-delete-msg]");
+    if (button) button.setAttribute("data-delete-msg", id);
+  }
+
   function timeLabel() {
     var label = el("span", "chat-time", now());
     label.setAttribute("dir", "ltr");
@@ -445,6 +454,7 @@
     var stoppedByServer = false;
     var activityTimer = null;
     var toolRunning = false;
+    var saved = null;
     var turn = {
       controller: new AbortController(),
       streamId: null,
@@ -474,7 +484,6 @@
       input.value = text;
       input.style.height = "auto";
       input.focus();
-      loadThread();
     }
 
     function showToolEvent(tool) {
@@ -536,6 +545,8 @@
             scrollToBottom();
           } else if (event.done) {
             if (toolRunning) hideActivity();
+          } else if (event.saved) {
+            saved = event.saved;
           } else if (event.stopped) {
             stoppedByServer = true;
           }
@@ -552,7 +563,20 @@
         if (!answer.trim()) {
           parts.bubble.textContent = str().noResponse;
         }
-        return loadThread();
+
+        // The stream told us the ids it stored, so there is no need to refetch
+        // the thread. Only fall back to a reload if persistence failed.
+        if (!saved) return loadThread();
+        if (saved.conversation_id) conversationId = saved.conversation_id;
+        adoptId(userParts, saved.user_turn_id);
+        adoptId(parts, saved.assistant_turn_id);
+        history.push({ id: saved.user_turn_id, role: "user", content: text });
+        history.push({
+          id: saved.assistant_turn_id,
+          role: "assistant",
+          content: answer,
+        });
+        if (welcomeRow) welcomeRow.classList.add("hidden");
       })
       .catch(function (err) {
         if (turn.stopped || stoppedByServer) {
@@ -645,30 +669,59 @@
         if (response.status !== 204) {
           throw new Error(str().deleteFailed);
         }
-        return loadThread();
+        // Remove locally: the server already deleted the row and, for a user
+        // turn, the reply that followed it.
+        var index = -1;
+        for (var i = 0; i < history.length; i++) {
+          if (history[i].id === id) {
+            index = i;
+            break;
+          }
+        }
+        if (index === -1) return;
+
+        var doomed = [history[index].id];
+        var next = history[index + 1];
+        if (history[index].role === "user" && next && next.role === "assistant") {
+          doomed.push(next.id);
+        }
+        history = history.filter(function (entry) {
+          return doomed.indexOf(entry.id) === -1;
+        });
+        doomed.forEach(function (removedId) {
+          var row = messagesEl.querySelector('[data-msg-id="' + removedId + '"]');
+          if (row) row.remove();
+        });
+        if (welcomeRow) welcomeRow.classList.toggle("hidden", history.length > 0);
       })
       .catch(function (err) {
         markStatusError(err.message || str().deleteFailed);
       });
   });
 
+  // Clear wipes the view immediately, so it works even when the request is slow
+// or the thread was already deleted. The server copy is removed alongside.
+  function clearView() {
+    history = [];
+    conversationId = null;
+    Array.prototype.slice.call(messagesEl.children).forEach(function (child) {
+      if (child !== welcomeRow) child.remove();
+    });
+    if (welcomeRow) welcomeRow.classList.remove("hidden");
+    statusEl.textContent = "";
+    statusDot.style.display = "none";
+    input.focus();
+  }
+
   clearBtn.addEventListener("click", function () {
-    if (!conversationId) return;
-    Session.authFetch("/api/conversations/" + encodeURIComponent(conversationId), {
-      method: "DELETE",
-    })
+    clearView();
+    // Clear every thread, not just the current one: older databases hold one
+    // conversation per message, and leaving those behind would resurrect one.
+    Session.authFetch("/api/conversations", { method: "DELETE" })
       .then(function (response) {
         if (response.status !== 204) {
           throw new Error(str().clearFailed);
         }
-        history = [];
-        conversationId = null;
-        return loadThread();
-      })
-      .then(function () {
-        statusEl.textContent = "";
-        statusDot.style.display = "none";
-        input.focus();
       })
       .catch(function (err) {
         markStatusError(err.message || str().clearFailed);
