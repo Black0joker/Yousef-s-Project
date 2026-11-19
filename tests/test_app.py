@@ -676,7 +676,7 @@ class TestStreamStop(AppTestCase):
         with app_module._ACTIVE_LOCK:
             app_module._ACTIVE_STREAMS.clear()
 
-    def open_stream(self, fake):
+    def open_stream(self, fake, payload=None):
         """Start the stream view inside a request context, without consuming it."""
         from flask import g
 
@@ -684,10 +684,13 @@ class TestStreamStop(AppTestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+        body = payload if payload is not None else {
+            "messages": [{"role": "user", "content": "hi"}]
+        }
         context = app_module.app.test_request_context(
             "/api/chat/stream",
             method="POST",
-            data=json.dumps({"messages": [{"role": "user", "content": "hi"}]}),
+            data=json.dumps(body),
             content_type="application/json",
         )
         context.push()
@@ -793,6 +796,37 @@ class TestStreamStop(AppTestCase):
         generator.close()  # what the WSGI server does when the browser goes away
         self.assertTrue(fake.upstream.closed)
         self.assertEqual(app_module._ACTIVE_STREAMS, {})
+
+    def _turns(self):
+        return self.http.get("/api/conversations/current", headers=self.headers).get_json()["turns"]
+
+    def test_stopping_deletes_the_turn_from_the_database(self):
+        # the UI rolls a stopped turn back, so the rows must go too
+        fake = self.stoppable_client()
+        response, user_id = self.open_stream(fake, payload={"message": "hi"})
+        stream_id = response.headers["X-Stream-ID"]
+        generator = response.response
+        next(generator)
+
+        self.assertTrue(app_module.stop_stream(user_id, stream_id))
+        "".join(generator)
+
+        self.assertEqual(self._turns(), [])
+
+    def test_a_disconnect_keeps_the_turn_and_the_partial_reply(self):
+        # a dropped connection is not a rollback: the user did send the message
+        fake = self.stoppable_client()
+        response, _user_id = self.open_stream(fake, payload={"message": "hi"})
+        generator = response.response
+        next(generator)
+
+        generator.close()
+
+        turns = self._turns()
+        self.assertEqual([turn["role"] for turn in turns], ["user", "assistant"])
+        self.assertEqual(turns[0]["content"], "hi")
+        self.assertEqual(turns[1]["content"], "partial")
+        self.assertEqual(turns[1]["outcome"], "stopped")
 
 
 class TestVoiceApi(AppTestCase):
@@ -1780,6 +1814,157 @@ class TestTrustedApi(AppTestCase):
         self.assertIn(b'id="invites-list"', response.data)
         self.assertIn(b'id="watching-list"', response.data)
         self.assertIn(b'id="sharing-toggle"', response.data)
+
+
+class TestServerSideChat(AppTestCase):
+    """Chat builds its payload from the database and reuses one thread."""
+
+    def current(self):
+        return self.http.get("/api/conversations/current", headers=self.headers).get_json()
+
+    def test_message_creates_one_thread_and_persists_turns(self):
+        self.use_client(FakeClient(reply="hello back"))
+        response = self.http.post(
+            "/api/chat", json={"message": "hi"}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 200)
+        conversation_id = response.get_json()["conversation_id"]
+
+        thread = self.current()
+        self.assertEqual(thread["conversation"]["id"], conversation_id)
+        self.assertEqual([turn["content"] for turn in thread["turns"]], ["hi", "hello back"])
+
+    def test_a_second_message_reuses_the_thread(self):
+        self.use_client(FakeClient(reply="first"))
+        first = self.http.post(
+            "/api/chat", json={"message": "one"}, headers=self.headers
+        ).get_json()["conversation_id"]
+
+        self.use_client(FakeClient(reply="second"))
+        second = self.http.post(
+            "/api/chat", json={"message": "two"}, headers=self.headers
+        ).get_json()["conversation_id"]
+
+        self.assertEqual(first, second)
+        turns = self.current()["turns"]
+        self.assertEqual([turn["content"] for turn in turns], ["one", "first", "two", "second"])
+
+    def test_the_model_sees_history_from_the_database(self):
+        self.use_client(FakeClient(reply="first"))
+        self.http.post("/api/chat", json={"message": "one"}, headers=self.headers)
+
+        fake = self.use_client(FakeClient(reply="second"))
+        self.http.post("/api/chat", json={"message": "two"}, headers=self.headers)
+
+        payload = fake.payloads[-1]
+        self.assertEqual(payload[0]["role"], "system")
+        self.assertEqual(
+            [(item["role"], item["content"]) for item in payload[1:]],
+            [("user", "one"), ("assistant", "first"), ("user", "two")],
+        )
+
+    def test_client_supplied_history_is_ignored(self):
+        fake = self.use_client(FakeClient(reply="ok"))
+        self.http.post(
+            "/api/chat",
+            json={
+                "message": "real",
+                "messages": [{"role": "user", "content": "INJECTED"}],
+            },
+            headers=self.headers,
+        )
+        payload = fake.payloads[-1]
+        contents = [item["content"] for item in payload]
+        self.assertIn("real", contents)
+        self.assertNotIn("INJECTED", contents)
+
+    def test_an_empty_message_is_rejected(self):
+        self.use_client(FakeClient())
+        response = self.http.post("/api/chat", json={"message": "   "}, headers=self.headers)
+        self.assertEqual(response.status_code, 400)
+
+    def test_streaming_returns_the_conversation_id_header(self):
+        events = [
+            {"type": "delta", "content": "hi"},
+            {"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []},
+        ]
+        self.use_client(FakeClient(events=events))
+        response = self.http.post(
+            "/api/chat/stream", json={"message": "hello"}, headers=self.headers
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers.get("X-Conversation-ID"))
+        response.get_data()
+
+        turns = self.current()["turns"]
+        self.assertEqual([turn["content"] for turn in turns], ["hello", "hi"])
+
+    def test_deleting_a_message_removes_it_and_its_reply(self):
+        self.use_client(FakeClient(reply="answer"))
+        self.http.post("/api/chat", json={"message": "question"}, headers=self.headers)
+
+        thread = self.current()
+        conversation_id = thread["conversation"]["id"]
+        user_turn = thread["turns"][0]
+
+        response = self.http.delete(
+            f"/api/conversations/{conversation_id}/turns/{user_turn['id']}",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(self.current()["turns"], [])
+
+    def test_deleting_an_unknown_message_is_404(self):
+        conversation_id = self.current()["conversation"]["id"]
+        response = self.http.delete(
+            f"/api/conversations/{conversation_id}/turns/nope", headers=self.headers
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_clearing_deletes_the_thread(self):
+        self.use_client(FakeClient(reply="answer"))
+        conversation_id = self.http.post(
+            "/api/chat", json={"message": "question"}, headers=self.headers
+        ).get_json()["conversation_id"]
+
+        response = self.http.delete(
+            f"/api/conversations/{conversation_id}", headers=self.headers
+        )
+        self.assertEqual(response.status_code, 204)
+
+        fresh = self.current()
+        self.assertNotEqual(fresh["conversation"]["id"], conversation_id)
+        self.assertEqual(fresh["turns"], [])
+
+    def test_another_account_cannot_delete_my_turns(self):
+        self.use_client(FakeClient(reply="answer"))
+        conversation_id = self.http.post(
+            "/api/chat", json={"message": "question"}, headers=self.headers
+        ).get_json()["conversation_id"]
+        turn_id = self.current()["turns"][0]["id"]
+
+        other = dict(CREDENTIALS)
+        other["email"] = "other-chat@example.com"
+        token = self.http.post("/api/auth/register", json=other).get_json()["token"]
+        other_headers = {"Authorization": "Bearer " + token}
+
+        self.assertEqual(
+            self.http.delete(
+                f"/api/conversations/{conversation_id}/turns/{turn_id}",
+                headers=other_headers,
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.http.delete(
+                f"/api/conversations/{conversation_id}", headers=other_headers
+            ).status_code,
+            404,
+        )
+        self.assertEqual(len(self.current()["turns"]), 2)
+
+    def test_current_requires_auth(self):
+        self.assertEqual(self.http.get("/api/conversations/current").status_code, 401)
 
 
 if __name__ == "__main__":

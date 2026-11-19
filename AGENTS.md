@@ -136,26 +136,44 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
 
 ### Conversation persistence
 
+- The database is the **source of truth** for the chat thread. `static/chat.js`
+  sends `{conversation_id, message, language}` and renders whatever
+  `GET /api/conversations/current` returns; it no longer keeps its own copy, and
+  `th_chat_history_<id>` is gone from `localStorage` (only `th_language`,
+  `th_theme`, and the session keys remain).
+- `prepare_chat_turn()` in `app.py` has two paths. A **string `message`** means
+  server-authoritative: append the user turn, reload the thread, and send *that*
+  to the model. A `messages` array is the legacy path kept for the call page. On
+  the message path, client-supplied `messages` are ignored — never merge them,
+  or a modified browser can inject assistant turns.
+- `build_payload_from_turns()` trims to the last `MAX_MESSAGES` turns. Reading
+  history from the DB removed the old client-side cap, so without the trim a long
+  thread eventually exceeds the model context.
 - `app.py` imports and initialises `conversations` right after `memory`:
-  `auth.init_db()` → `memory.init_db()` → `conversations.init_db()`. Add a new
-  table here, not in `memory.py`.
+  `auth.init_db()` → `memory.init_db()` → `conversations.init_db()`.
 - Recording is **best effort by design**. `record_user_turn` /
   `record_assistant_turn` / `append_turn` swallow and log failures and return
   `None`; never make them raise, or a logging bug breaks the chat reply.
-- The streaming route records the assistant turn from `generate()`'s `finally`,
-  using the accumulated `answer` list. It must run on every exit path — normal,
-  stopped, errored, `GeneratorExit`, and `BrokenPipeError` — so a stopped turn is
-  stored with `outcome="stopped"` instead of vanishing.
-- `conversations.resolve_conversation()` honors a client-supplied
-  `conversation_id` only when the row belongs to the caller; anything else
-  silently starts a new thread. Never trust the id as an authorization check.
-- Every conversation and turn row is filtered by `user_id`, and the insert path
+- The streaming route records from `generate()`'s `finally`, and the two "stopped"
+  cases differ:
+  - `reason == "stopped"` (explicit `/api/chat/stop`) → **delete the user turn**
+    and do not record the assistant turn, because the UI rolled the bubbles back.
+  - `reason == "disconnected"` (`GeneratorExit` / `BrokenPipeError`) → **keep the
+    user turn** and record the partial reply. A dropped connection is not a
+    rollback; deleting there would erase a message the user did send.
+- `delete_turn()` removes a user turn **and the assistant turn that followed
+  it**, matching the bubble-delete rule. It resolves the follow-up by `rowid`, so
+  do not rely on timestamps (they can collide within a second).
+- `current_conversation()` returns the newest thread and creates one if none.
+  This app has exactly one ongoing thread per account.
+- Every conversation and turn row is filtered by `user_id`, and the write path
   re-checks conversation ownership inside the same transaction.
 - Message text is personal data: `conversations._execute` logs statement text
   with `?` placeholders only and never bind values, mirroring `memory._execute`.
   Tool arguments/results are not stored — only the tool *name* and its ok flag.
-- `tests/test_conversations.py` covers the module and
-  `tests/test_app.py::TestConversationPersistence` covers the routes.
+- Tests: `tests/test_conversations.py` (module) and
+  `tests/test_app.py::TestServerSideChat` / `TestStreamStop` (routes, including
+  the stop-vs-disconnect split).
 
 ### Schedule
 
@@ -402,8 +420,9 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   `sharing: false` contact as "sharing paused" rather than skipping it. The
   "View activity" toggle fetches `/api/trusted/people/<id>`; a `403` means the
   gates closed and must surface as an error, not as an empty card.
-- Browser state keys: `th_token`, `th_expires_at`, `th_user`, `th_theme`,
-  `th_language`, and per-account `th_chat_history_<user id>`.
+- Browser state keys: `th_token`, `th_expires_at`, `th_user`, `th_theme`, and
+  `th_language`. Chat history is **not** in `localStorage` any more; it lives in
+  `conversations` and is rendered from `/api/conversations/current`.
 - `templates/memory.html` + `static/memory-page.js` are the `/memory` shell:
   list, per-item delete, export, "forget everything", and consent toggles. Every
   call uses `Session.authFetch`; deletion asks for `window.confirm` first, and

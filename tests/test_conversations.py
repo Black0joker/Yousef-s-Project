@@ -271,5 +271,142 @@ class ConversationTestCase(unittest.TestCase):
         self.assertEqual(remaining, 0)
 
 
+class ServerSideThreadTestCase(unittest.TestCase):
+    """The database is the source of truth for the chat thread."""
+
+    def setUp(self):
+        os.environ["TH_DB_PATH"] = os.path.join(_TMPDIR, "app.db")
+        auth.init_db()
+        conversations.init_db()
+        self.conn = auth.connect()
+        self.conn.execute("DELETE FROM users")
+        self.conn.commit()
+        self.user = self._create_user("A", "One", "a@example.com")
+        self.other = self._create_user("B", "Two", "b@example.com")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _create_user(self, first, last, email):
+        cursor = self.conn.execute(
+            """
+            INSERT INTO users (first_name, last_name, email, password_hash, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (first, last, email, "not-a-real-hash", "2026-01-01T00:00:00Z"),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    # -- current thread ----------------------------------------------------
+
+    def test_current_conversation_is_created_once(self):
+        first = conversations.current_conversation(self.user, connection=self.conn)
+        second = conversations.current_conversation(self.user, connection=self.conn)
+        self.assertEqual(first["id"], second["id"])
+
+    def test_current_conversation_is_per_user(self):
+        mine = conversations.current_conversation(self.user, connection=self.conn)
+        theirs = conversations.current_conversation(self.other, connection=self.conn)
+        self.assertNotEqual(mine["id"], theirs["id"])
+
+    # -- deleting turns ----------------------------------------------------
+
+    def _thread(self):
+        conversation = conversations.current_conversation(self.user, connection=self.conn)
+        conversations.append_turn(
+            self.user, conversation["id"], "user", "first question", connection=self.conn
+        )
+        conversations.append_turn(
+            self.user, conversation["id"], "assistant", "first answer", connection=self.conn
+        )
+        conversations.append_turn(
+            self.user, conversation["id"], "user", "second question", connection=self.conn
+        )
+        conversations.append_turn(
+            self.user, conversation["id"], "assistant", "second answer", connection=self.conn
+        )
+        return conversation["id"]
+
+    def test_deleting_a_user_turn_also_deletes_its_reply(self):
+        conversation_id = self._thread()
+        turns = conversations.get_turns(self.user, conversation_id, connection=self.conn)
+        self.assertEqual(len(turns), 4)
+
+        deleted = conversations.delete_turn(
+            self.user, conversation_id, turns[0]["id"], connection=self.conn
+        )
+        self.assertEqual(deleted, 2)
+
+        remaining = conversations.get_turns(self.user, conversation_id, connection=self.conn)
+        self.assertEqual([turn["content"] for turn in remaining], ["second question", "second answer"])
+
+    def test_deleting_an_assistant_turn_leaves_the_question(self):
+        conversation_id = self._thread()
+        turns = conversations.get_turns(self.user, conversation_id, connection=self.conn)
+        deleted = conversations.delete_turn(
+            self.user, conversation_id, turns[1]["id"], connection=self.conn
+        )
+        self.assertEqual(deleted, 1)
+        remaining = conversations.get_turns(self.user, conversation_id, connection=self.conn)
+        self.assertEqual([turn["role"] for turn in remaining], ["user", "user", "assistant"])
+
+    def test_deleting_a_turn_is_owner_scoped(self):
+        conversation_id = self._thread()
+        turns = conversations.get_turns(self.user, conversation_id, connection=self.conn)
+        self.assertEqual(
+            conversations.delete_turn(
+                self.other, conversation_id, turns[0]["id"], connection=self.conn
+            ),
+            0,
+        )
+        self.assertEqual(
+            len(conversations.get_turns(self.user, conversation_id, connection=self.conn)), 4
+        )
+
+    def test_deleting_an_unknown_turn_is_zero(self):
+        conversation_id = self._thread()
+        for value in ("nope", "", None):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    conversations.delete_turn(
+                        self.user, conversation_id, value, connection=self.conn
+                    ),
+                    0,
+                )
+
+    # -- clearing ----------------------------------------------------------
+
+    def test_deleting_a_conversation_removes_every_turn(self):
+        conversation_id = self._thread()
+        self.assertTrue(
+            conversations.delete_conversation(self.user, conversation_id, connection=self.conn)
+        )
+        self.assertEqual(
+            conversations.get_turns(self.user, conversation_id, connection=self.conn), []
+        )
+        self.assertIsNone(
+            conversations.get_conversation(self.user, conversation_id, connection=self.conn)
+        )
+
+    def test_deleting_a_conversation_is_owner_scoped(self):
+        conversation_id = self._thread()
+        self.assertFalse(
+            conversations.delete_conversation(self.other, conversation_id, connection=self.conn)
+        )
+        self.assertEqual(
+            len(conversations.get_turns(self.user, conversation_id, connection=self.conn)), 4
+        )
+
+    def test_deleting_a_conversation_then_current_starts_fresh(self):
+        conversation_id = self._thread()
+        conversations.delete_conversation(self.user, conversation_id, connection=self.conn)
+        fresh = conversations.current_conversation(self.user, connection=self.conn)
+        self.assertNotEqual(fresh["id"], conversation_id)
+        self.assertEqual(
+            conversations.get_turns(self.user, fresh["id"], connection=self.conn), []
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

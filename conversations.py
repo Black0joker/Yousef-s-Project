@@ -309,6 +309,144 @@ def resolve_conversation(
     return create_conversation(user_id, mode, language, connection=connection)["id"]
 
 
+def current_conversation(
+    user_id: Any,
+    mode: str = "chat",
+    language: str = "en",
+    connection: Optional[sqlite3.Connection] = None,
+) -> Dict[str, Any]:
+    """The user's one active thread, created if they have none.
+
+    This app uses a single ongoing thread per account, so "current" is simply
+    the most recently started conversation.
+    """
+    key = _user_id(user_id)
+    token = memory._current_user.set(key)
+    try:
+        with memory._db(connection) as db:
+            row = _execute(
+                db,
+                """
+                SELECT * FROM conversations
+                WHERE user_id = ?
+                ORDER BY started_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (key,),
+                operation="conversation.current",
+            ).fetchone()
+    finally:
+        memory._current_user.reset(token)
+
+    if row is not None:
+        return _conversation_dict(row)
+    return create_conversation(user_id, mode, language, connection=connection)
+
+
+def delete_turn(
+    user_id: Any,
+    conversation_id: Any,
+    turn_id: Any,
+    connection: Optional[sqlite3.Connection] = None,
+) -> int:
+    """Delete one turn, plus the reply that followed a user turn.
+
+    Mirrors the bubble-delete rule: removing a question removes the assistant
+    reply it produced. Returns how many rows went away (0 when not the caller's).
+    """
+    key = _user_id(user_id)
+    if not isinstance(conversation_id, str) or not conversation_id.strip():
+        return 0
+    if not isinstance(turn_id, str) or not turn_id.strip():
+        return 0
+
+    token = memory._current_user.set(key)
+    try:
+        with memory._db(connection) as db:
+            row = _execute(
+                db,
+                """
+                SELECT id, role, conversation_id FROM conversation_turns
+                WHERE id = ? AND conversation_id = ? AND user_id = ?
+                """,
+                (turn_id.strip(), conversation_id.strip(), key),
+                operation="turn.get",
+            ).fetchone()
+            if row is None:
+                return 0
+
+            doomed = [row["id"]]
+            if row["role"] == "user":
+                following = _execute(
+                    db,
+                    """
+                    SELECT id FROM conversation_turns
+                    WHERE conversation_id = ? AND user_id = ?
+                      AND role = 'assistant' AND rowid > (
+                        SELECT rowid FROM conversation_turns WHERE id = ?
+                      )
+                    ORDER BY rowid ASC
+                    LIMIT 1
+                    """,
+                    (conversation_id.strip(), key, row["id"]),
+                    operation="turn.following",
+                ).fetchone()
+                if following is not None:
+                    doomed.append(following["id"])
+
+            deleted = 0
+            for item in doomed:
+                cursor = _execute(
+                    db,
+                    "DELETE FROM conversation_turns WHERE id = ? AND user_id = ?",
+                    (item, key),
+                    operation="turn.delete",
+                )
+                deleted += cursor.rowcount if cursor.rowcount > 0 else 0
+            db.commit()
+            return deleted
+    finally:
+        memory._current_user.reset(token)
+
+
+def delete_conversation(
+    user_id: Any, conversation_id: Any, connection: Optional[sqlite3.Connection] = None
+) -> bool:
+    """Remove a thread and every turn in it. Returns False when not the caller's."""
+    key = _user_id(user_id)
+    if not isinstance(conversation_id, str) or not conversation_id.strip():
+        return False
+
+    token = memory._current_user.set(key)
+    try:
+        with memory._db(connection) as db:
+            owned = _execute(
+                db,
+                "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
+                (conversation_id.strip(), key),
+                operation="conversation.owner",
+            ).fetchone()
+            if owned is None:
+                return False
+            # delete turns explicitly rather than relying on cascade ordering
+            _execute(
+                db,
+                "DELETE FROM conversation_turns WHERE conversation_id = ? AND user_id = ?",
+                (conversation_id.strip(), key),
+                operation="turn.delete_all",
+            )
+            _execute(
+                db,
+                "DELETE FROM conversations WHERE id = ? AND user_id = ?",
+                (conversation_id.strip(), key),
+                operation="conversation.delete",
+            )
+            db.commit()
+            return True
+    finally:
+        memory._current_user.reset(token)
+
+
 def append_turn(
     user_id: Any,
     conversation_id: str,

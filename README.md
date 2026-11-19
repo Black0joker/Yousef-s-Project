@@ -107,10 +107,11 @@ How it works:
 
 ## Conversation history
 
-The browser keeps a fast local copy of the thread in
-`localStorage` (`th_chat_history_<user id>`), but that is a cache, not a record:
-it disappears with the browser profile. Every turn is therefore also written to
-the server in two tables:
+The database is the **source of truth** for the chat transcript. The browser no
+longer keeps its own copy, and it no longer sends history to the server: it
+sends one message, and the server reloads the thread from SQLite.
+
+Two tables hold it:
 
 - `conversations` — one row per thread (`mode`, `language`, `started_at`,
   `ended_at`).
@@ -120,21 +121,41 @@ the server in two tables:
 
 | Method | Endpoint | Result |
 | --- | --- | --- |
+| `GET` | `/api/conversations/current` | `200 {conversation, turns}`; creates the thread on first use |
 | `GET` | `/api/conversations` | `200 {conversations: [...]}` newest first |
 | `GET` | `/api/conversations/<id>` | `200 {conversation, turns}` or `404 not_found` |
+| `DELETE` | `/api/conversations/<id>/turns/<turn_id>` | `204`; a user turn also deletes its reply |
+| `DELETE` | `/api/conversations/<id>` | `204`; deletes the thread and its turns |
 
-`POST /api/chat` and `POST /api/chat/stream` accept an optional
-`conversation_id` and return the id they used, so a client can continue a thread.
-An id that belongs to another account is ignored and a new thread starts; it is
-never a way to read or write someone else's transcript.
+**There is one ongoing thread per account.** `GET /api/conversations/current`
+returns the most recent one and creates it if the user has none.
+
+**The model reads the database.** `POST /api/chat` and `/api/chat/stream` accept:
+
+```jsonc
+{ "conversation_id": "...", "message": "what the user just typed", "language": "en" }
+```
+
+The server appends the user turn, reloads the thread, and sends *that* to the
+model. Client-supplied history is ignored on this path, so a modified browser
+cannot inject assistant turns. Only the most recent 50 turns are sent, so a long
+thread cannot outgrow the model's context. The legacy `messages` array still
+works for the call page, which keeps its own in-memory history.
 
 Behaviour worth knowing:
 
+- **Deleting a message deletes it from the database** and the page re-renders
+  from the server. Removing a user message also removes the assistant reply that
+  followed it, matching the bubble rule in the UI.
+- **"Clear" deletes the thread**, and the next load starts a fresh one.
+- **Stopping a reply deletes the pair.** The UI rolls a stopped turn back, so the
+  stored rows go too. A dropped connection is *not* a rollback: the user turn
+  and any partial reply are kept and flagged `outcome: "stopped"`.
+
 - **Persistence is best effort.** A database error while recording a turn never
   fails the reply the user is waiting for.
-- **Stopped and failed turns are still recorded**, flagged with
-  `outcome: "stopped"` or `"error"`, and keep whatever text had streamed. A
-  missing turn would be worse than a flagged one.
+- **Failed turns are recorded** with `outcome: "error"`. An assistant row with no
+  text is not rendered as a bubble.
 - **Message text is never logged.** `conversation.sql` logs the statement with
   `?` placeholders, matching the memory SQL log.
 - Deleting a user cascades to their conversations and turns.
@@ -319,7 +340,10 @@ Logging in returns a **JWT** (HS256, 7 days) that the browser keeps in
 | `POST` | `/api/auth/logout` | – | `204` |
 | `POST` | `/api/location` | `latitude, longitude` | `204` |
 | `GET` | `/api/conversations` | – | `200 {conversations}` |
+| `GET` | `/api/conversations/current` | – | `200 {conversation, turns}` |
 | `GET` | `/api/conversations/<id>` | – | `200 {conversation, turns}` |
+| `DELETE` | `/api/conversations/<id>/turns/<id>` | – | `204` / `404` |
+| `DELETE` | `/api/conversations/<id>` | – | `204` / `404` |
 | `GET` | `/api/memory` | – | `200 {entities, relationships, facts}` |
 | `GET` | `/api/memory/export` | – | `200` JSON download |
 | `DELETE` | `/api/memory/fact/<id>` | – | `204` / `404` |

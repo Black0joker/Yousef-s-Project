@@ -9,7 +9,6 @@
   var user = Session.getUser() || {};
   var fullName = (user.full_name || "").trim();
   var firstName = (user.first_name || "").trim() || fullName.split(" ")[0] || "there";
-  var HISTORY_KEY = "th_chat_history_" + (user.id != null ? user.id : "anon");
 
   // --- language ------------------------------------------------------------
 
@@ -40,6 +39,9 @@
       toolGeneric: "Using tool...",
       toolAccount: "Checking your account...",
       toolAccountDone: "Account checked",
+      loadFailed: "Could not load your conversation.",
+      deleteFailed: "Could not delete that message.",
+      clearFailed: "Could not clear the conversation.",
     },
     ar: {
       code: "AR",
@@ -63,6 +65,9 @@
       toolGeneric: "جارٍ استخدام الأداة...",
       toolAccount: "جارٍ التحقق من حسابك...",
       toolAccountDone: "تم التحقق من الحساب",
+      loadFailed: "تعذر تحميل المحادثة.",
+      deleteFailed: "تعذر حذف هذه الرسالة.",
+      clearFailed: "تعذر مسح المحادثة.",
     },
   };
 
@@ -137,16 +142,49 @@
 
   applyLanguage();
 
-  var history = loadHistory();
-  history.forEach(function (entry, index) {
-    if (entry.role !== "user") {
-      addAssistantMessage(entry.content, entry.id);
-      return;
-    }
-    var next = history[index + 1];
-    addUserMessage(entry.content, entry.id, !!next && next.role === "assistant");
-  });
-  saveHistory(); // persist any ids assigned to older entries
+  var history = [];
+  var conversationId = null;
+
+  // The database is the source of truth: the thread is rendered from what the
+  // server holds, and the composer only ever sends the new message.
+  function renderThread() {
+    Array.prototype.slice.call(messagesEl.children).forEach(function (child) {
+      if (child !== welcomeRow) child.remove();
+    });
+    history.forEach(function (entry, index) {
+      if (entry.role !== "user") {
+        addAssistantMessage(entry.content, entry.id);
+        return;
+      }
+      var next = history[index + 1];
+      addUserMessage(entry.content, entry.id, !!next && next.role === "assistant");
+    });
+    if (welcomeRow) welcomeRow.classList.toggle("hidden", history.length > 0);
+    scrollToBottom();
+  }
+
+  function loadThread() {
+    return Session.authFetch("/api/conversations/current")
+      .then(function (response) {
+        if (!response.ok) throw new Error(str().loadFailed);
+        return response.json();
+      })
+      .then(function (data) {
+        conversationId = data.conversation.id;
+        history = (data.turns || [])
+          .filter(function (turn) {
+            // an errored turn can carry empty assistant text; skip the bubble
+            return !(turn.role === "assistant" && !String(turn.content || "").trim());
+          })
+          .map(function (turn) {
+            return { id: turn.id, role: turn.role, content: turn.content };
+          });
+        renderThread();
+      })
+      .catch(function () {
+        /* stay usable for typing even if the initial load failed */
+      });
+  }
 
   // confirm the session server-side and refresh the profile from the token claims
   Session.authFetch("/api/auth/me")
@@ -164,6 +202,9 @@
     .catch(function () {
       /* the session guard already handled expired/invalid tokens */
     });
+
+  // The transcript lives in the database now: render whatever it holds.
+  loadThread();
 
   // --- helpers ------------------------------------------------------------
 
@@ -214,35 +255,6 @@
 
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
-  }
-
-  function loadHistory() {
-    try {
-      var parsed = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .filter(function (m) {
-          return (
-            m &&
-            (m.role === "user" || m.role === "assistant") &&
-            typeof m.content === "string" &&
-            m.content.length > 0
-          );
-        })
-        .map(function (m) {
-          return { id: typeof m.id === "string" && m.id ? m.id : newId(), role: m.role, content: m.content };
-        });
-    } catch (err) {
-      return [];
-    }
-  }
-
-  function saveHistory() {
-    try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-    } catch (err) {
-      /* storage full or blocked; the chat still works for this session */
-    }
   }
 
   // --- message rendering --------------------------------------------------
@@ -346,6 +358,12 @@
     bubble.textContent = "⚠️ " + message;
   }
 
+  // Transient error in the status line, for failures with no bubble to mark.
+  function markStatusError(message) {
+    statusEl.textContent = message;
+    statusDot.style.display = "none";
+  }
+
   // --- composer / status --------------------------------------------------
 
   function setBusy(busy) {
@@ -412,9 +430,9 @@
   }
 
   function send(text) {
+    // The server stores the user turn; render it optimistically and reload the
+    // thread when the turn ends so ids and content come from the database.
     var userEntry = { id: newId(), role: "user", content: text };
-    history.push(userEntry);
-    saveHistory();
     var userParts = addUserMessage(text, userEntry.id, true);
 
     var assistantEntry = { id: newId(), role: "assistant", content: "" };
@@ -445,22 +463,18 @@
 
     function rollbackStopped() {
       hideActivity();
-      // drop the whole turn from the transcript and local history
+      // The server already deleted the pair; drop the bubbles to match.
       if (parts.row && parts.row.parentNode) {
         parts.row.parentNode.removeChild(parts.row);
       }
       if (userParts && userParts.row && userParts.row.parentNode) {
         userParts.row.parentNode.removeChild(userParts.row);
       }
-      var userIndex = history.indexOf(userEntry);
-      if (userIndex !== -1) history.splice(userIndex, 1);
-      var assistantIndex = history.indexOf(assistantEntry);
-      if (assistantIndex !== -1) history.splice(assistantIndex, 1);
-      saveHistory();
       // put the text back in the composer so it can be edited or resent
       input.value = text;
       input.style.height = "auto";
       input.focus();
+      loadThread();
     }
 
     function showToolEvent(tool) {
@@ -488,11 +502,10 @@
     Session.authFetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      // ids stay client-side; the API only ever sees role + content
+      // Only the new message is sent; the server rebuilds history from the DB.
       body: JSON.stringify({
-        messages: history.map(function (m) {
-          return { role: m.role, content: m.content };
-        }),
+        conversation_id: conversationId,
+        message: text,
         language: lang,
       }),
       signal: turn.controller.signal,
@@ -504,6 +517,8 @@
           });
         }
         turn.streamId = response.headers.get("X-Stream-ID");
+        var returnedId = response.headers.get("X-Conversation-ID");
+        if (returnedId) conversationId = returnedId;
         return consume(response.body, function (event) {
           if (event.error) {
             hideActivity();
@@ -537,9 +552,7 @@
         if (!answer.trim()) {
           parts.bubble.textContent = str().noResponse;
         }
-        assistantEntry.content = answer;
-        history.push(assistantEntry);
-        saveHistory();
+        return loadThread();
       })
       .catch(function (err) {
         if (turn.stopped || stoppedByServer) {
@@ -616,41 +629,50 @@
     if (!button) return;
 
     var id = button.getAttribute("data-delete-msg");
-    var index = -1;
-    for (var i = 0; i < history.length; i++) {
-      if (history[i].id === id) {
-        index = i;
-        break;
-      }
-    }
-    if (index === -1) return;
 
-    var doomed = [history[index].id];
-    var next = history[index + 1];
-    if (history[index].role === "user" && next && next.role === "assistant") {
-      doomed.push(next.id);
-    }
-
-    history = history.filter(function (entry) {
-      return doomed.indexOf(entry.id) === -1;
-    });
-    saveHistory();
-
-    doomed.forEach(function (removedId) {
-      var row = messagesEl.querySelector('[data-msg-id="' + removedId + '"]');
-      if (row) row.remove();
-    });
+    // Deleting is a server operation now: the row goes away in the database and
+    // the thread is re-rendered from it. A user turn also removes its reply,
+    // which the server handles in one call.
+    if (!conversationId || !id) return;
+    Session.authFetch(
+      "/api/conversations/" +
+        encodeURIComponent(conversationId) +
+        "/turns/" +
+        encodeURIComponent(id),
+      { method: "DELETE" }
+    )
+      .then(function (response) {
+        if (response.status !== 204) {
+          throw new Error(str().deleteFailed);
+        }
+        return loadThread();
+      })
+      .catch(function (err) {
+        markStatusError(err.message || str().deleteFailed);
+      });
   });
 
   clearBtn.addEventListener("click", function () {
-    history = [];
-    saveHistory();
-    Array.prototype.slice.call(messagesEl.children).forEach(function (child) {
-      if (child !== welcomeRow) child.remove();
-    });
-    statusEl.textContent = "";
-    statusDot.style.display = "none";
-    input.focus();
+    if (!conversationId) return;
+    Session.authFetch("/api/conversations/" + encodeURIComponent(conversationId), {
+      method: "DELETE",
+    })
+      .then(function (response) {
+        if (response.status !== 204) {
+          throw new Error(str().clearFailed);
+        }
+        history = [];
+        conversationId = null;
+        return loadThread();
+      })
+      .then(function () {
+        statusEl.textContent = "";
+        statusDot.style.display = "none";
+        input.focus();
+      })
+      .catch(function (err) {
+        markStatusError(err.message || str().clearFailed);
+      });
   });
 
   if (langToggle) {

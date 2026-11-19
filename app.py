@@ -401,6 +401,92 @@ def build_payload(
     return [{"role": "system", "content": system}] + messages
 
 
+def build_payload_from_turns(
+    turns: Any,
+    language: str = DEFAULT_LANGUAGE,
+    mode: str = DEFAULT_MODE,
+) -> List[Message]:
+    """Conversation rebuilt from stored turns, with the system prompt first.
+
+    This is the server-as-source-of-truth path: the model sees what the
+    database holds, not what the browser claims. Only the most recent
+    ``MAX_MESSAGES`` turns are sent so a long thread cannot outgrow the
+    model's context.
+    """
+    code = normalize_language(language)
+    conversation = normalize_mode(mode)
+
+    messages: List[Message] = []
+    if isinstance(turns, list):
+        for turn in turns[-MAX_MESSAGES:]:
+            if not isinstance(turn, dict):
+                continue
+            role = turn.get("role")
+            content = turn.get("content")
+            if role not in ALLOWED_ROLES or not isinstance(content, str) or not content.strip():
+                continue
+            messages.append({"role": role, "content": content[:MAX_CONTENT_CHARS]})
+
+    if not messages:
+        raise ValueError("There is nothing to send yet.")
+
+    return [{"role": "system", "content": system_prompt(code, conversation)}] + messages
+
+
+def prepare_chat_turn(
+    data: Dict[str, Any],
+    language: str,
+    mode: str,
+    greeting: bool,
+) -> Tuple[List[Message], str, Optional[Dict[str, Any]]]:
+    """Build the model payload and record the inbound turn.
+
+    Two request shapes are accepted:
+
+    * ``{"message": "..."}`` — the server is the source of truth. The user turn
+      is appended, then the whole thread is reloaded from the database and that
+      is what the model sees.
+    * ``{"messages": [...]}`` — the legacy shape, still used by the call page,
+      which keeps its own in-memory history.
+
+    Returns ``(payload, conversation_id, user_turn)``.
+    """
+    user_id = (auth.current_user() or {}).get("id")
+    raw_message = data.get("message")
+
+    if isinstance(raw_message, str):
+        text = raw_message.strip()
+        if not text:
+            raise ValueError("Message content must be a non-empty string.")
+        if len(text) > MAX_CONTENT_CHARS:
+            raise ValueError(
+                f"Message content is too long (max {MAX_CONTENT_CHARS} characters)."
+            )
+
+        # Reuse the caller's thread. `resolve_conversation` would start a new
+        # one whenever the id is missing, which fragmented the transcript.
+        existing = conversations.get_conversation(user_id, data.get("conversation_id"))
+        if existing is None:
+            existing = conversations.current_conversation(user_id, mode, language)
+        conversation_id = existing["id"]
+
+        user_turn = conversations.record_user_turn(
+            user_id, conversation_id, text, model=model_name()
+        )
+        turns = conversations.get_turns(user_id, conversation_id)
+        payload = build_payload_from_turns(turns, language, mode)
+        return payload, conversation_id, user_turn
+
+    payload = build_payload(data.get("messages"), language, mode, greeting)
+    conversation_id = conversations.resolve_conversation(
+        user_id, data.get("conversation_id"), mode, language
+    )
+    user_turn = conversations.record_user_turn(
+        user_id, conversation_id, conversations.last_user_message(payload), model=model_name()
+    )
+    return payload, conversation_id, user_turn
+
+
 def error_body(exc: TokenHarborError) -> Dict[str, Any]:
     return {
         "error": {
@@ -596,27 +682,21 @@ def api_chat():
     language = normalize_language(data.get("language"))
     mode = normalize_mode(data.get("mode"))
     greeting = bool(data.get("greeting"))
+
+    user_id = (auth.current_user() or {}).get("id")
     try:
-        payload = build_payload(data.get("messages"), language, mode, greeting)
+        payload, conversation_id, user_turn = prepare_chat_turn(
+            data, language, mode, greeting
+        )
     except ValueError as exc:
         return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
 
-    auth.touch_last_message((auth.current_user() or {}).get("id"))
+    auth.touch_last_message(user_id)
 
     try:
         client = get_client()
     except TokenHarborError as exc:
         return jsonify(error_body(exc)), 500
-
-    # Persist both sides of the turn. Best effort: a logging failure must not
-    # break the reply the user is waiting for.
-    user_id = (auth.current_user() or {}).get("id")
-    conversation_id = conversations.resolve_conversation(
-        user_id, data.get("conversation_id"), mode, language
-    )
-    conversations.record_user_turn(
-        user_id, conversation_id, conversations.last_user_message(payload), model=model_name()
-    )
 
     started = time.perf_counter()
     logger.info(
@@ -679,25 +759,21 @@ def api_chat_stream():
     language = normalize_language(data.get("language"))
     mode = normalize_mode(data.get("mode"))
     greeting = bool(data.get("greeting"))
+
+    user_id = (auth.current_user() or {}).get("id")
     try:
-        payload = build_payload(data.get("messages"), language, mode, greeting)
+        payload, conversation_id, user_turn = prepare_chat_turn(
+            data, language, mode, greeting
+        )
     except ValueError as exc:
         return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
 
-    auth.touch_last_message((auth.current_user() or {}).get("id"))
+    auth.touch_last_message(user_id)
 
     try:
         client = get_client()
     except TokenHarborError as exc:
         return jsonify(error_body(exc)), 500
-
-    user_id = (auth.current_user() or {}).get("id")
-    conversation_id = conversations.resolve_conversation(
-        user_id, data.get("conversation_id"), mode, language
-    )
-    conversations.record_user_turn(
-        user_id, conversation_id, conversations.last_user_message(payload), model=model_name()
-    )
 
     logger.info(
         "chat.request",
@@ -838,18 +914,27 @@ def api_chat_stream():
             except Exception:
                 pass
             unregister_stream(stream_id)
-            # Record the reply even when the turn stopped, errored, or the
-            # browser disconnected: a missing turn is worse than a flagged one.
-            conversations.record_assistant_turn(
-                user_id,
-                conversation_id,
-                "".join(answer),
-                finish_reason=finish_reason,
-                model=model_name(),
-                latency_ms=elapsed_ms(started),
-                outcome=outcome if outcome in conversations.VALID_OUTCOMES else "error",
-                tool_calls=tool_calls or None,
-            )
+            if reason == "stopped" and user_turn is not None:
+                # The UI rolls a stopped turn back (bubbles gone, text restored),
+                # so delete the pair instead of leaving rows the user never sees.
+                # A disconnect is NOT a rollback: keep the message and the
+                # partial reply, because the user did send it.
+                conversations.delete_turn(
+                    user_id, conversation_id, user_turn.get("id")
+                )
+            else:
+                # Record the reply even when it errored or the browser vanished:
+                # a missing turn is worse than a flagged one.
+                conversations.record_assistant_turn(
+                    user_id,
+                    conversation_id,
+                    "".join(answer),
+                    finish_reason=finish_reason,
+                    model=model_name(),
+                    latency_ms=elapsed_ms(started),
+                    outcome=outcome if outcome in conversations.VALID_OUTCOMES else "error",
+                    tool_calls=tool_calls or None,
+                )
             logger.info(
                 "chat.stream.done",
                 extra={
@@ -869,6 +954,7 @@ def api_chat_stream():
         "X-Accel-Buffering": "no",  # don't buffer behind a reverse proxy
         "Connection": "keep-alive",
         "X-Stream-ID": stream_id,
+        "X-Conversation-ID": conversation_id,
     }
     return Response(stream_with_context(generate()), mimetype="text/event-stream", headers=headers)
 
@@ -890,6 +976,18 @@ def api_chat_stop():
 # --- conversation API -----------------------------------------------------
 
 
+@app.get("/api/conversations/current")
+def api_conversation_current():
+    """The caller's one active thread, created on first use.
+
+    The chat page loads from here, so the database is what it renders.
+    """
+    claims = auth.current_user() or {}
+    conversation = conversations.current_conversation(claims.get("id"))
+    turns = conversations.get_turns(claims.get("id"), conversation["id"])
+    return jsonify({"conversation": conversation, "turns": turns})
+
+
 @app.get("/api/conversations")
 def api_conversations():
     """The caller's saved threads, newest first."""
@@ -909,6 +1007,31 @@ def api_conversation_detail(conversation_id: str):
             404,
         )
     return jsonify(detail)
+
+
+@app.delete("/api/conversations/<conversation_id>")
+def api_conversation_delete(conversation_id: str):
+    """Remove a thread and all of its turns ("Clear" in the UI)."""
+    claims = auth.current_user() or {}
+    if not conversations.delete_conversation(claims.get("id"), conversation_id):
+        return (
+            jsonify({"error": {"code": "not_found", "message": "Conversation not found."}}),
+            404,
+        )
+    return "", 204
+
+
+@app.delete("/api/conversations/<conversation_id>/turns/<turn_id>")
+def api_turn_delete(conversation_id: str, turn_id: str):
+    """Delete one turn; a user turn also removes the reply that followed it."""
+    claims = auth.current_user() or {}
+    deleted = conversations.delete_turn(claims.get("id"), conversation_id, turn_id)
+    if deleted == 0:
+        return (
+            jsonify({"error": {"code": "not_found", "message": "Message not found."}}),
+            404,
+        )
+    return "", 204
 
 
 # --- voice API ------------------------------------------------------------
@@ -1468,4 +1591,4 @@ def api_location():
 
 if __name__ == "__main__":
     debug = os.environ.get("FLASK_DEBUG", "1") == "1"
-    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5000")), debug=debug)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=debug)
