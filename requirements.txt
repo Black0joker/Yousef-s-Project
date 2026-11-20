@@ -2,3 +2,8 @@ Flask>=3.0
 requests>=2.31
 python-dotenv>=1.0
 PyJWT>=2.8
+# Production WSGI server. It cannot run on Windows (the local dev platform, where
+# the Flask dev server is fine), but Railway's Nixpacks build and the Docker image
+# both need it. Keep it single-worker with threads: the active-stream registry and
+# the SQLite connections live in-process, so extra workers break the stop endpoint.
+gunicorn>=22,<24

@@ -36,12 +36,22 @@ behavior changes. This file covers workflow and non-obvious wiring.
   (test-enforced). Frontend JS is plain IIFEs, not ES modules.
 - `prompts/*.md` — SAGE personas, read fresh on every request (edit without
   restarting).
+- `Dockerfile`, `.dockerignore`, `railway.json` — deployment. Both deploy paths
+  serve with threaded gunicorn, one worker, because the stream registry and the
+  SQLite file are per-process; `FLASK_DEBUG=0` there, since the default `1` runs
+  the reloader and the interactive debugger. Railway's filesystem is ephemeral,
+  so the database belongs on a mounted volume (`TH_DB_PATH`), never on the
+  container layer. Deployment details are in README's "Deployment" section.
 
 ## Commands
 
 ```bash
 pip install -r requirements.txt
 python app.py                  # 127.0.0.1:5000; PORT / FLASK_DEBUG are honored
+
+# production-style serve (gunicorn cannot run on Windows)
+gunicorn --bind 127.0.0.1:5000 --worker-class gthread --workers 1 --threads 8 \
+  --timeout 0 app:app
 
 python -m unittest discover -s tests -v          # offline suite, no key/network
 python -m unittest tests.test_app.TestPages.test_login_page_renders -v  # one test
@@ -111,10 +121,12 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   it. A captured connection then fails with `ProgrammingError: Cannot operate
   on a closed database` on the first tool call. `memory._db(None)` resolves a
   live connection per call instead (the request's while one exists, its own
-  otherwise), which is also why non-streaming chat is unaffected. The test
-  client cannot catch a regression here because it consumes the body inside the
-  app call, so `tests/test_app.py::TestMemoryTools` disables context
-  preservation to reproduce the real ordering.
+  otherwise), which is also why non-streaming chat is unaffected. `auth.get_db()`
+  now replaces a handle it finds closed, but that is a safety net for stale
+  references, not licence to hold one. The test client cannot catch a regression
+  here because it consumes the body inside the app call, so
+  `tests/test_app.py::TestMemoryTools` disables context preservation to reproduce
+  the real ordering.
 - Memory query results always include `created_at` for every entity,
   relationship, and fact; facts also include `observed_at` and `valid_until`.
   Keep those date fields when changing the row serializers.

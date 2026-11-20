@@ -3,7 +3,7 @@
 #   docker build -t sage .
 #   docker run --rm -p 5000:5000 --env-file .env -v sage-data:/app/instance sage
 #
-# The "Docker" section of README.md lists every option and the env vars that matter.
+# README.md's "Deployment" section lists every option and the env vars that matter.
 
 FROM python:3.12-slim
 
@@ -17,11 +17,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# gunicorn is installed here rather than in requirements.txt because it cannot
-# run on Windows, which is the local dev platform. Dependencies are copied on
-# their own so app edits do not reinstall them.
+# Dependencies on their own layer so app edits do not reinstall them. gunicorn
+# comes from requirements.txt so Nixpacks deploys and this image agree.
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt "gunicorn>=22,<24"
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
@@ -29,8 +28,8 @@ COPY . .
 # it out of the context, and runtime config arrives through --env-file or -e.
 
 # Unprivileged user; the SQLite database and the rotating log both live in
-# instance/, which is also the volume declared below. Werkzeug's scrypt hashing
-# needs nothing from apt — the bundled sqlite3 and OpenSSL cover it.
+# instance/. Werkzeug's scrypt hashing needs nothing from apt — the bundled
+# sqlite3 and OpenSSL cover it.
 RUN groupadd --system --gid 10001 sage \
  && useradd --system --uid 10001 --gid sage --home-dir /app --shell /usr/sbin/nologin sage \
  && mkdir -p /app/instance \
@@ -39,8 +38,9 @@ RUN groupadd --system --gid 10001 sage \
 USER sage
 
 # Conversations, memory, appointments, places, users, and logs all persist here.
-VOLUME ["/app/instance"]
-
+# Railway does not support the Dockerfile VOLUME instruction. Attach a Railway
+# Volume mounted at /app/instance in the service settings so the SQLite database
+# and logs survive redeploys.
 EXPOSE 5000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

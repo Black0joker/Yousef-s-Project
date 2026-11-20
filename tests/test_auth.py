@@ -540,5 +540,30 @@ class TestPages(AuthTestCase):
                 self.assertIn(b"data-theme-toggle", body)
 
 
+class TestConnectionLifecycle(AuthTestCase):
+    """The request connection must never be handed out dead.
+
+    A streamed response can outlive the app context that owns it, so teardown
+    may close the connection while something still holds a reference. get_db()
+    must notice and replace it rather than return a dead handle.
+    """
+
+    def test_get_db_replaces_a_connection_closed_underneath_it(self):
+        from flask import g
+
+        with app_module.app.test_request_context():
+            first = auth.get_db()
+            first.close()  # what close_db() does when the response starts
+            self.assertIs(g.db, first)  # g still points at the dead handle
+
+            second = auth.get_db()
+            self.assertIsNot(second, first)
+            self.assertEqual(second.execute("SELECT 1").fetchone()[0], 1)
+
+    def test_get_db_reuses_an_open_connection(self):
+        with app_module.app.test_request_context():
+            self.assertIs(auth.get_db(), auth.get_db())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

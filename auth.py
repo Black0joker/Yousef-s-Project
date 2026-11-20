@@ -100,11 +100,36 @@ def connect() -> sqlite3.Connection:
     return connection
 
 
+def _is_closed(connection: sqlite3.Connection) -> bool:
+    """Whether ``connection`` can no longer be used.
+
+    ``sqlite3.Connection`` exposes no public "closed" flag, so probe it: a bare
+    ``SELECT 1`` is the cheapest statement SQLite can run, and the only realistic
+    reason for it to raise ``ProgrammingError`` is that the connection is gone.
+    """
+    try:
+        connection.execute("SELECT 1")
+    except sqlite3.ProgrammingError:
+        return True
+    return False
+
+
 def get_db() -> sqlite3.Connection:
-    """Per-request connection, closed by the app teardown handler."""
-    if "db" not in g:
-        g.db = connect()
-    return g.db
+    """Per-request connection, closed by the app teardown handler.
+
+    A connection that was closed out from under us (for example by a teardown
+    racing a streamed response) is replaced instead of handed out: callers must
+    never receive a dead handle. Code still must not *hold* a request connection
+    past the request — see the tool-handler rule in AGENTS.md — this only turns
+    that mistake from a 500 into an extra connection.
+    """
+    connection = g.get("db")
+    if connection is not None and _is_closed(connection):
+        connection = None
+    if connection is None:
+        connection = connect()
+        g.db = connection
+    return connection
 
 
 def close_db(_exc: Optional[BaseException] = None) -> None:
