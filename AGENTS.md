@@ -36,12 +36,15 @@ behavior changes. This file covers workflow and non-obvious wiring.
   (test-enforced). Frontend JS is plain IIFEs, not ES modules.
 - `prompts/*.md` — SAGE personas, read fresh on every request (edit without
   restarting).
-- `Dockerfile`, `.dockerignore`, `railway.json` — deployment. Both deploy paths
-  serve with threaded gunicorn, one worker, because the stream registry and the
-  SQLite file are per-process; `FLASK_DEBUG=0` there, since the default `1` runs
-  the reloader and the interactive debugger. Railway's filesystem is ephemeral,
-  so the database belongs on a mounted volume (`TH_DB_PATH`), never on the
-  container layer. Deployment details are in README's "Deployment" section.
+- `Dockerfile`, `.dockerignore`, `railway.json` — deployment. Railway builds the
+  image (`"builder": "DOCKERFILE"`); it serves threaded gunicorn with one worker,
+  because the stream registry and the SQLite file are per-process, and sets
+  `FLASK_DEBUG=0` since the default `1` runs the reloader and the interactive
+  debugger. The image runs as root on purpose: platform volumes (Railway mounts
+  one at `/app/instance`) are root-owned, and an unprivileged process cannot
+  create the SQLite file, which fails as `unable to open database file` during
+  import. Railway's filesystem is otherwise ephemeral, so the database must live
+  on that volume. Deployment details are in README's "Deployment" section.
 
 ## Commands
 

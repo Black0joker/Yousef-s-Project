@@ -747,8 +747,11 @@ Windows, where `python app.py` remains the way to develop.
 
 ### Railway
 
-`railway.json` pins the Nixpacks builder and the command above, so a deploy does
-not depend on Nixpacks guessing the start command.
+`railway.json` pins the Dockerfile builder and the start command, so a deploy does
+not depend on Railway guessing how to run the app. The container must be able to
+write `TH_DB_PATH`; the image runs as root because Railway bind-mounts volumes as
+`root:root` and an unprivileged user cannot create the SQLite file there (the
+symptom is `unable to open database file` at import, and the worker never boots).
 
 | Setting | Value | Why |
 | --- | --- | --- |
@@ -756,14 +759,17 @@ not depend on Nixpacks guessing the start command.
 | `TH_API_KEY` | your `thk_live_...` key | chat answers `500` without it |
 | `JWT_SECRET` | long random string | unset, the key is random per boot, so every restart signs everyone out |
 | `FLASK_DEBUG` | `0` | the default `1` runs the reloader and the interactive debugger |
-| `TH_DB_PATH` | `/data/app.db` | keeps the database on the mounted volume |
-| `LOG_FILE` | `/data/app.log` | keeps rotating logs off the ephemeral layer |
+| `TH_DB_PATH` | `/app/instance/app.db` | the volume mount below |
+| `LOG_FILE` | `/app/instance/app.log` | keeps rotating logs on the volume too |
 | Replicas | `1` | SQLite plus the in-process stream registry |
 
-> **Attach a volume.** Railway's filesystem is ephemeral, so without a volume the
-> database — users, memory, transcripts, appointments, places, and trusted
-> contacts — is wiped on every deploy. Mount it at `/data` and point `TH_DB_PATH`
-> and `LOG_FILE` at it.
+> **Attach a volume** and mount it at **`/app/instance`**. Railway's filesystem is
+> ephemeral, so without a volume the database — users, memory, transcripts,
+> appointments, places, and trusted contacts — is wiped on every deploy.
+>
+> A volume mounted anywhere else is fine too, but then set `TH_DB_PATH` and
+> `LOG_FILE` to that path; the mount is root-owned, which is why the image does
+> not drop privileges.
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(48))"   # JWT_SECRET
@@ -775,17 +781,14 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"   # JWT_SECRET
 docker build -t sage .
 docker run --rm -p 5000:5000 \
   --env-file .env \
-  -e TH_DB_PATH=/app/instance/app.db \
   -v sage-data:/app/instance \
   sage
 ```
 
-The image already sets `FLASK_DEBUG=0`, runs gunicorn with the flags above, and
-uses a non-root user (uid 10001). If you mount a volume, it must be writable by
-that uid, or SQLite reports `unable to open database file`.
-
-To deploy the image instead of Nixpacks, set
-`"build": { "builder": "DOCKERFILE" }` in `railway.json`.
+The image sets `FLASK_DEBUG=0` and runs gunicorn with the flags above. It runs as
+root so that a mounted volume is writable; if you want a non-root runtime, add an
+entrypoint that `chown`s the mount and then drops privileges (that entrypoint has
+to start as root anyway).
 
 > Environment variables, not `.env`: the image does not copy `.env` (it is in
 > `.dockerignore`). Pass configuration with `--env-file` or `-e`.

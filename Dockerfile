@@ -27,15 +27,13 @@ COPY . .
 # Never ship a real .env: it carries TH_API_KEY/JWT_SECRET. .dockerignore keeps
 # it out of the context, and runtime config arrives through --env-file or -e.
 
-# Unprivileged user; the SQLite database and the rotating log both live in
-# instance/. Werkzeug's scrypt hashing needs nothing from apt — the bundled
-# sqlite3 and OpenSSL cover it.
-RUN groupadd --system --gid 10001 sage \
- && useradd --system --uid 10001 --gid sage --home-dir /app --shell /usr/sbin/nologin sage \
- && mkdir -p /app/instance \
- && chown -R sage:sage /app
-
-USER sage
+# Run as root on purpose. Railway (like most platforms) bind-mounts volumes as
+# root:root, so an unprivileged user cannot create the SQLite file inside
+# /app/instance and the worker dies during import with "unable to open database
+# file". Keeping a non-root runtime would need an entrypoint that chowns the
+# mount and then drops privileges — which still starts as root. See README's
+# "Deployment" section.
+RUN mkdir -p /app/instance
 
 # Conversations, memory, appointments, places, users, and logs all persist here.
 # Railway does not support the Dockerfile VOLUME instruction. Attach a Railway
