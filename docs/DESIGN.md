@@ -386,17 +386,24 @@ Kinds shown: **Location** (`location`), **Voice replies** (`voice`),
 | --- | --- |
 | Row | `max-width: 85%`, 12px gap; user rows right-aligned, assistant left-aligned |
 | Avatar | 32px gradient circle, `spa` icon at 16px, assistant rows only; 2px top offset |
-| Bubble | 12/16px padding, 16px radius, 15px/1.65 text, `white-space: pre-wrap`, `overflow-wrap: anywhere`, 4px squared corner on the sender's side |
+| Bubble | 12/16px padding, **18px radius**, 15px/1.65 text, `white-space: pre-wrap`, `overflow-wrap: anywhere`, 4px squared corner on the sender's side; assistant bubbles carry a 1px hairline border, user bubbles a 160° gradient (`#145243 → #0f3d33`, pale mint in dark mode) |
 | Meta | 12px timestamp + hover/tap delete button; user meta right-aligned |
 | Delete button | trash icon; **always visible on touch devices** (hover media query) |
 | Typing indicator | three 6px dots bouncing, 1.2s loop (disabled under reduced motion) |
 | Streaming caret | inline `▍` appended via `.is-streaming`, blinking 1s |
 | Tool activity | one transient line under the bubble: *Saving memory…*, *Searching memory…*, *Memory saved*, *Memory searched*, *Memory tool failed*, *Using tool…*, *Checking your account…*, *Account checked*. Tool **names/status only** — never arguments or results. Clears when answer text starts, or expires 1.4s after a tool ends. |
 | Welcome bubble | assistant bubble with a personalized greeting; hidden once the thread is non-empty |
+| Starter chips | three pill buttons under the greeting (*What's on today?*, *Remember that...*, *What do you remember about me?*). Tapping **fills the composer** — it never auto-sends — and they hide once the thread has a message |
+| Jump-to-latest | 30px pill above the composer, visible only while the reader is scrolled up. Tap scrolls smoothly to the newest message |
 | Error bubble | red bubble replacing an answer that failed |
 
-Empty thread = the welcome bubble only. Long threads scroll inside the thread region;
-the app auto-scrolls to the newest bubble on each delta.
+Empty thread = the welcome bubble plus the starter chips. Long threads scroll inside
+the thread region.
+
+**Scroll policy:** streaming follows the reply only while the reader is within ~120px of
+the end; otherwise the view stays put and the jump pill appears. Sending a message
+always jumps to the newest bubble. Scrolls are instant for streamed deltas and smooth
+only for the explicit jump — never animate every token.
 
 ### 4.8 Composer (chat and call)
 
@@ -411,9 +418,12 @@ the app auto-scrolls to the newest bubble on each delta.
   + 2px `brand-600/15` ring, 10px padding.
 - Textarea autosizes from 1 row up to **144px**, no visible scrollbar; Enter sends,
   Shift+Enter inserts a newline; call-screen placeholder is *"Type instead of speaking…"*.
-- `Clear` (chat only) = clear the whole conversation; label hidden below `sm`.
-- `Stop` appears while streaming (chat only).
-- Send button is a 36px filled circle; disabled at 40% opacity.
+- `Clear` (chat only) = clear the whole conversation; label hidden below `sm`. It asks
+  for confirmation in the shared dialog, whose copy notes that saved memories stay.
+- **One action slot:** while a reply streams, `Send` hides and `Stop` takes its place;
+  when the turn ends the swap reverses. Two competing buttons never show at once.
+- Send button is a 36px filled circle with a 150° brand gradient; disabled at 40% opacity;
+  hovering lifts it 1px with a soft glow.
 - Status line shows *Thinking…* while busy and clears afterwards.
 
 ### 4.9 Call screen
@@ -438,6 +448,61 @@ the app auto-scrolls to the newest bubble on each delta.
 - The voice banner explains *why* voice is off: not configured, token expired, mic
   denied, no mic, unsupported language, network loss, or a browser that blocks the
   speech service. Callers can always type.
+
+### 4.10 Motion
+
+One timing scale for the whole app (CSS custom properties in `static/style.css`):
+
+| Token | Value | Use |
+| --- | --- | --- |
+| `--dur-fast` | 150ms | hover, press, alert dismissal |
+| `--dur-base` | 240ms | rows, banners, dialogs |
+| `--dur-slow` | 420ms | page entrance |
+| `--ease-standard` | `cubic-bezier(.2, .8, .2, 1)` | everything default |
+| `--ease-pop` | `cubic-bezier(.2, .9, .25, 1)` | dialogs, auth card |
+
+Named effects:
+
+| Class | Effect | Where |
+| --- | --- | --- |
+| `.anim-rise` | fade + 8px lift | list rows, empty states |
+| `.anim-slide-down` | fade + 6px drop | alerts, banners |
+| `.anim-pop` | scale-in | dialog card, auth card |
+| `.page-enter` | 420ms fade | `<main>` of content pages |
+| `.tap-style` | `active:scale(.97)` | chips, tabs |
+
+Lists with `.stagger-list` animate their rows 30ms apart, capped at 6 rows so long lists
+stay snappy. Only `transform` and `opacity` are animated.
+
+**Reduced motion is a hard requirement:** one `prefers-reduced-motion` block disables
+every entrance animation, the stagger delays, the skeleton shimmer, the typing dots,
+the stream caret, the call-orb pulse, the jump-pill transition and smooth scrolling. Any
+new animation must be added to that block.
+
+### 4.11 Confirmation dialog
+
+Replaces `window.confirm` everywhere (clear conversation, delete memory item, forget
+everything, remove appointment/routine/place, revoke a trusted contact).
+
+- Centered card, max 22rem, 20px radius, `pop-in` entrance; backdrop `rgba(2,15,12,.45)`
+  with a 2px blur and a 120ms fade.
+- Title 16px/700; body 14px/1.6 (omitted when the copy is the question itself).
+- Actions: `Cancel` (`btn-secondary`) then the destructive action (`btn-danger`).
+- **Focus starts on Cancel for destructive actions** and on Confirm otherwise; Escape and
+  the backdrop cancel; Tab is trapped inside; focus returns to the trigger.
+- Implemented once in `static/ui.js` as `THUI.confirm({title, message, confirmLabel,
+  cancelLabel})` → `Promise<boolean>`. The copy comes from each page's `STRINGS` map.
+
+### 4.12 Loading and feedback
+
+- **Skeletons:** content pages show 2 shimmering placeholder rows per list while the
+  first fetch is in flight (`.skeleton-row` + `.skeleton-line`, 1.4s shimmer), so the
+  page never flashes "Nothing saved yet" before data arrives. Removed on error too.
+- **Success toasts:** success alerts slide in, then fade out on their own after **4.5s**
+  (`THUI.showSuccess`), instead of sitting there until the next action. Errors stay until
+  dismissed by the next action.
+- **Press feedback:** every tappable row/chip/tab uses `.tap-style` so touch users see a
+  state change, not just hover users.
 
 ---
 
@@ -486,9 +551,12 @@ familiar-place banner → thread → composer → status line.
 | Stop | Send `POST /api/chat/stop {id: X-Stream-ID}`, then abort the local request; roll back **both** bubbles and restore the text to the composer. A stopped turn is deleted server-side |
 | Disconnect | Never a rollback: the server keeps the user turn and the partial reply |
 | Delete a message | `DELETE /api/conversations/<conversation_id>/turns/<turn_id>`; deleting a user turn also removes the assistant reply that followed it |
-| Clear | `DELETE /api/conversations` (clears **all** threads) — confirm first |
+| Clear | `DELETE /api/conversations` (clears **all** threads) — always through the confirmation dialog |
 | Banners | Appointment banner from `GET /api/appointments/today?tz_offset=`; place banner from the location ping (below) |
 | Greeting | `Hi, <first name>` in the header; the welcome bubble uses *Welcome, <name>! Ask me anything to get started.* |
+| Empty state | Welcome bubble + three starter chips that fill the composer; both disappear once a message exists |
+| Reading while streaming | The reply must not pull the view down. Follow only within ~120px of the end; otherwise show the jump pill |
+| Composer state | Send ↔ Stop swap in one slot; typing stays enabled while a reply streams |
 
 Location ping (chat and call only): every **5s**, `POST /api/location` with the current
 coordinates, skipping a tick while a request is in flight, pausing when the app is
@@ -657,6 +725,10 @@ Header also carries the language toggle here. Success alerts per section
 | `datetime-local` + `new Date(value).toISOString()` | `@react-native-community/datetimepicker`, then send ISO-8601 UTC |
 | `-new Date().getTimezoneOffset()` | same computation for `tz_offset` (minutes **east** of UTC) |
 | Pre-paint theme script | read the stored theme (or `useColorScheme()`) before the first render |
+| `THUI.confirm` (styled dialog) | `Alert.alert` with a destructive button, or a `Modal` that mirrors §4.11 — keep focus on Cancel for destructive actions |
+| `THUI.showSuccess` + CSS transitions | a toast/snackbar with a 4.5s timer, animated with `Animated`/Reanimated |
+| `.stagger-list` + `anim-*` classes | `Animated`/Reanimated entering animations with the same durations and easings (§4.10) |
+| `prefers-reduced-motion` media query | `AccessibilityInfo.isReduceMotionEnabled()` — gate every entering animation and the smooth scroll |
 
 ### 8.3 Suggested navigation
 
@@ -712,11 +784,11 @@ All user-facing copy lives in `STRINGS` maps inside these modules (each has `en`
 
 | Module | Screen | Keys |
 | --- | --- | --- |
-| `static/chat.js` | Chat | `code, greeting, welcome, logout, clear, placeholder, placeholderShort, thinking, noResponse, stop, toggleLang, deleteReply, deleteOne, toolSaving, toolSearching, toolSaved, toolFound, toolFailed, toolGeneric, toolAccount, toolAccountDone, loadFailed, deleteFailed, clearFailed` |
+| `static/chat.js` | Chat | `code, greeting, welcome, logout, clear, placeholder, placeholderShort, thinking, noResponse, stop, toggleLang, deleteReply, deleteOne, toolSaving, toolSearching, toolSaved, toolFound, toolFailed, toolGeneric, toolAccount, toolAccountDone, loadFailed, deleteFailed, clearFailed, jumpLatest, clearTitle, clearBody, clearConfirm, cancel, suggest1, suggest2, suggest3` |
 | `static/call.js` | Call | `code, badge, title, subtitle, start, hangup, mute, unmute, ready, connecting, listening, thinking, speaking, muted, ended, logout, placeholder, you, sage, voiceUnavailable, voiceExpired, micDenied, micUnavailable, micLanguage, micNetwork, micNetworkOffline, micBraveBlocked, noSpeech, audioBlocked, error, requestFailed` |
-| `static/memory-page.js` | Memory | `memoryTitle, memoryHint, export, deleteAll, empty, entities, facts, relationships, consentTitle, consentHint, delete, confirmDelete, confirmDeleteAll, deletedOne, deletedAll, exported, emptyValue, consentLocation, consentVoice, consentMemorySharing, consentFamiliarVoice, consentTrustedSharing, on, off, genericError, loadFailed` |
-| `static/schedule-page.js` | Schedule | `todayTitle, todayHint, todayEmpty, upcomingTitle, upcomingEmpty, titleLabel, whenLabel, placeLabel, add, routinesTitle, routinesHint, routinesEmpty, placesTitle, placesHint, placesEmpty, placeNameLabel, radiusLabel, saveHere, placeSaved, confirmRemovePlace, locationOff, locationDenied, done, remove, confirmRemove, confirmRemoveRoutine, added, genericError, loadFailed, required` |
-| `static/trusted-page.js` | Trusted | `trustedTitle, trustedHint, trustedEmpty, emailLabel, allowLastSeen, allowLocation, sendInvite, invitesTitle, invitesEmpty, watchingTitle, watchingEmpty, sharingTitle, sharingHint, sharingOn, sharingOff, notSharing, paused, pending, accepted, revoked, revoke, accept, decline, see, hide, confirmRevoke, inviteSent, acceptedMsg, declinedMsg, revokedMsg, lastSeen, neverSeen, warning, location, locationHidden, staleBadge, activeBadge, unknownBadge, genericError, loadFailed` |
+| `static/memory-page.js` | Memory | `memoryTitle, memoryHint, export, deleteAll, empty, entities, facts, relationships, consentTitle, consentHint, delete, confirmDelete, confirmDeleteAll, cancel, deletedOne, deletedAll, exported, emptyValue, consentLocation, consentVoice, consentMemorySharing, consentFamiliarVoice, consentTrustedSharing, on, off, genericError, loadFailed` |
+| `static/schedule-page.js` | Schedule | `todayTitle, todayHint, todayEmpty, upcomingTitle, upcomingEmpty, titleLabel, whenLabel, placeLabel, add, routinesTitle, routinesHint, routinesEmpty, placesTitle, placesHint, placesEmpty, placeNameLabel, radiusLabel, saveHere, placeSaved, confirmRemovePlace, locationOff, locationDenied, done, remove, confirmRemove, confirmRemoveRoutine, cancel, added, genericError, loadFailed, required` |
+| `static/trusted-page.js` | Trusted | `trustedTitle, trustedHint, trustedEmpty, emailLabel, allowLastSeen, allowLocation, sendInvite, invitesTitle, invitesEmpty, watchingTitle, watchingEmpty, sharingTitle, sharingHint, sharingOn, sharingOff, notSharing, paused, pending, accepted, revoked, revoke, accept, decline, see, hide, confirmRevoke, cancel, inviteSent, acceptedMsg, declinedMsg, revokedMsg, lastSeen, neverSeen, warning, location, locationHidden, staleBadge, activeBadge, unknownBadge, genericError, loadFailed` |
 | `static/settings.js` | Settings | `pageTitle, profileTitle, profileHint, firstName, lastName, email, currentPassword, currentPasswordHint, saveProfile, passwordTitle, passwordHint, newPassword, confirmPassword, savePassword, profileSaved, passwordSaved, passwordMismatch, genericError, busy, toggleLang` |
 | `static/location.js` | banners | `at, next, off` |
 | `static/schedule-reminder.js` | banner | `next, at, today` |

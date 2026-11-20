@@ -317,6 +317,279 @@ body.lang-ar { line-height: 1.75; }
 
 /* the composer sends vertically; nothing to mirror in RTL */
 
+/* --- motion system ------------------------------------------------------ */
+
+/* One timing scale for every transition and entrance animation. */
+:root {
+  --dur-fast: 150ms;
+  --dur-base: 240ms;
+  --dur-slow: 420ms;
+  --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-pop: cubic-bezier(0.2, 0.9, 0.25, 1);
+  --rise: 8px;
+}
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(var(--rise)); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slide-down {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.anim-rise { animation: rise-in var(--dur-base) var(--ease-standard) both; }
+.anim-slide-down { animation: slide-down var(--dur-base) var(--ease-standard) both; }
+.anim-fade { animation: fade-in var(--dur-fast) ease-out both; }
+.anim-pop { animation: pop-in var(--dur-base) var(--ease-pop) both; }
+.page-enter { animation: fade-in var(--dur-slow) var(--ease-standard) both; }
+
+/* Press feedback that also fires on touch, where hover never happens. */
+.tap-style { transition: transform var(--dur-fast) var(--ease-standard); }
+.tap-style:active { transform: scale(0.97); }
+
+/* Rows arrive one after another; capped so a long list stays snappy. */
+.stagger-list > li { animation: rise-in var(--dur-base) var(--ease-standard) both; }
+.stagger-list > li:nth-child(2) { animation-delay: 30ms; }
+.stagger-list > li:nth-child(3) { animation-delay: 60ms; }
+.stagger-list > li:nth-child(4) { animation-delay: 90ms; }
+.stagger-list > li:nth-child(5) { animation-delay: 120ms; }
+.stagger-list > li:nth-child(6) { animation-delay: 150ms; }
+.stagger-list > li:nth-child(n + 7) { animation-delay: 180ms; }
+
+/* Alerts fade out when they auto-dismiss. */
+.alert-dismissing {
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity var(--dur-base) ease, transform var(--dur-base) ease;
+}
+
+/* --- page backdrop ------------------------------------------------------ */
+
+/* A soft brand glow behind the shell; the shell itself stays opaque. */
+body {
+  background-image:
+    radial-gradient(1100px 520px at 50% -220px, rgba(185, 237, 224, 0.38), transparent 70%),
+    radial-gradient(800px 460px at 88% 108%, rgba(158, 209, 196, 0.18), transparent 70%);
+  background-attachment: fixed;
+}
+
+.dark body {
+  background-image:
+    radial-gradient(1100px 520px at 50% -220px, rgba(59, 102, 91, 0.28), transparent 70%),
+    radial-gradient(800px 460px at 88% 108%, rgba(28, 79, 69, 0.22), transparent 70%);
+}
+
+/* --- chat polish -------------------------------------------------------- */
+
+/* The jump-to-latest pill is positioned against the shell, not the thread. */
+.app-shell { position: relative; }
+
+#messages { overscroll-behavior: contain; }
+
+.bubble {
+  border-radius: 18px;
+  box-shadow: 0 1px 2px rgba(15, 61, 51, 0.06);
+}
+
+.bubble--assistant {
+  border: 1px solid rgba(15, 61, 51, 0.06);
+}
+
+.dark .bubble--assistant { border-color: rgba(255, 255, 255, 0.05); }
+
+.bubble--user {
+  background-image: linear-gradient(160deg, #145243 0%, #0f3d33 100%);
+}
+
+.dark .bubble--user {
+  background-image: linear-gradient(160deg, #cbf3e7 0%, #b9ede0 100%);
+}
+
+.chat-avatar {
+  box-shadow: 0 1px 2px rgba(15, 61, 51, 0.2), 0 0 0 3px rgba(185, 237, 224, 0.35);
+}
+
+.dark .chat-avatar { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 0 3px rgba(59, 102, 91, 0.3); }
+
+.chat-jump {
+  position: absolute;
+  left: 50%;
+  bottom: 8rem;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.45rem 0.8rem;
+  border-radius: 9999px;
+  background: #0f3d33;
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  box-shadow: 0 12px 26px -12px rgba(15, 61, 51, 0.6);
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  pointer-events: none;
+  transition: opacity var(--dur-fast) ease, transform var(--dur-fast) var(--ease-standard);
+}
+
+.chat-jump.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+
+.dark .chat-jump { background: #b9ede0; color: #00261e; }
+
+.chat-jump .material-symbols-outlined { font-size: 16px; }
+
+/* Starter prompts under the greeting. */
+.chat-suggestion {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.45rem 0.75rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(227, 226, 223, 0.9);
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #1c4f45;
+  transition: background-color var(--dur-fast) ease, border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease, transform var(--dur-fast) var(--ease-standard);
+}
+
+.chat-suggestion:hover {
+  background: #ffffff;
+  border-color: #b9ede0;
+  color: #0f3d33;
+  transform: translateY(-1px);
+}
+
+.dark .chat-suggestion {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #dbe5e0;
+}
+
+.dark .chat-suggestion:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(185, 237, 224, 0.35);
+  color: #ffffff;
+}
+
+/* Send is the one saturated control in the composer; give it depth. */
+#send {
+  background-image: linear-gradient(150deg, #145243 0%, #0f3d33 100%);
+}
+
+.dark #send { background-image: linear-gradient(150deg, #cbf3e7 0%, #b9ede0 100%); }
+
+#send:hover:not(:disabled) {
+  box-shadow: 0 8px 20px -8px rgba(15, 61, 51, 0.55);
+  transform: translateY(-1px);
+}
+
+/* --- skeletons ---------------------------------------------------------- */
+
+.skeleton-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid rgba(227, 226, 223, 0.9);
+  border-radius: 0.75rem;
+  padding: 0.7rem 0.875rem;
+}
+
+.dark .skeleton-row { border-color: rgba(255, 255, 255, 0.08); }
+
+.skeleton-line {
+  height: 0.6rem;
+  border-radius: 9999px;
+  background-image: linear-gradient(
+    90deg,
+    #eeece7 25%,
+    #f8f7f4 37%,
+    #eeece7 63%
+  );
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-line--short { width: 45%; }
+.skeleton-line--tiny { width: 25%; }
+
+.dark .skeleton-line {
+  background-image: linear-gradient(90deg, #1f2a26 25%, #283430 37%, #1f2a26 63%);
+}
+
+@keyframes shimmer {
+  from { background-position: 100% 0; }
+  to   { background-position: 0 0; }
+}
+
+/* --- confirmation dialog ------------------------------------------------ */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.modal[hidden] { display: none; }
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 15, 12, 0.45);
+  backdrop-filter: blur(2px);
+  animation: fade-in var(--dur-fast) ease-out both;
+}
+
+.modal-card {
+  position: relative;
+  width: 100%;
+  max-width: 22rem;
+  border-radius: 20px;
+  background: #ffffff;
+  padding: 1.25rem;
+  box-shadow: 0 30px 60px -30px rgba(15, 61, 51, 0.45), 0 2px 6px rgba(15, 61, 51, 0.08);
+  animation: pop-in var(--dur-base) var(--ease-pop) both;
+}
+
+.dark .modal-card { background: #1a2320; }
+
+.modal-title {
+  font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #00261e;
+}
+
+.dark .modal-title { color: #ffffff; }
+
+.modal-text {
+  margin-top: 0.4rem;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: #3b665b;
+}
+
+.dark .modal-text { color: #b6b4ae; }
+
+.modal-actions {
+  margin-top: 1.1rem;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 /* --- viewport, safe areas, and phone inputs ----------------------------- */
 
 /* 100vh includes the browser chrome on phones; dvh tracks the visible area. */
@@ -342,6 +615,24 @@ body.lang-ar { line-height: 1.75; }
 @media (prefers-reduced-motion: reduce) {
   .animate-fade-in,
   .animate-pop-in,
+  .anim-rise,
+  .anim-slide-down,
+  .anim-fade,
+  .anim-pop,
+  .page-enter,
+  .stagger-list > li,
+  .skeleton-line,
+  .modal-backdrop,
+  .modal-card,
   .typing i,
   .is-streaming::after { animation: none !important; }
+
+  /* No custom delays left behind by the stagger rules. */
+  .stagger-list > li { animation-delay: 0s !important; }
+
+  /* Smooth scrolling is motion too. */
+  #messages { scroll-behavior: auto !important; }
+
+  .tap-style,
+  .chat-jump { transition: none !important; }
 }

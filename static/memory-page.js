@@ -24,6 +24,7 @@
       delete: "Remove",
       confirmDelete: "Remove this item? SAGE will forget it.",
       confirmDeleteAll: "This deletes everything SAGE remembers about you. Continue?",
+      cancel: "Cancel",
       deletedOne: "Removed.",
       deletedAll: "All memory deleted.",
       exported: "Export downloaded.",
@@ -52,6 +53,7 @@
       delete: "حذف",
       confirmDelete: "حذف هذا العنصر؟ سينساه SAGE.",
       confirmDeleteAll: "سيتم حذف كل ما يتذكره SAGE عنك. هل تريد المتابعة؟",
+      cancel: "إلغاء",
       deletedOne: "تم الحذف.",
       deletedAll: "تم حذف كل الذاكرة.",
       exported: "تم تنزيل النسخة.",
@@ -111,6 +113,10 @@
 
   function showSuccess(message) {
     errorEl.classList.add("hidden");
+    if (window.THUI) {
+      window.THUI.showSuccess(successEl, message);
+      return;
+    }
     successEl.textContent = message;
     successEl.classList.remove("hidden");
   }
@@ -162,27 +168,37 @@
   }
 
   function deleteItem(url, onDone) {
-    if (!window.confirm(str().confirmDelete)) return;
-    clearMessages();
-    Session.authFetch(url, { method: "DELETE" })
-      .then(function (response) {
-        if (response.status !== 204) {
-          return response
-            .json()
-            .catch(function () {
-              return null;
-            })
-            .then(function (payload) {
-              var err = payload && payload.error;
-              throw new Error(err && err.message ? err.message : str().genericError);
-            });
-        }
-        onDone();
-        showSuccess(str().deletedOne);
-      })
-      .catch(function (err) {
-        showError(err.message || str().genericError);
-      });
+    var ask = window.THUI
+      ? window.THUI.confirm({
+          title: str().confirmDelete,
+          confirmLabel: str().delete,
+          cancelLabel: str().cancel,
+        })
+      : Promise.resolve(window.confirm(str().confirmDelete));
+
+    ask.then(function (confirmed) {
+      if (!confirmed) return;
+      clearMessages();
+      Session.authFetch(url, { method: "DELETE" })
+        .then(function (response) {
+          if (response.status !== 204) {
+            return response
+              .json()
+              .catch(function () {
+                return null;
+              })
+              .then(function (payload) {
+                var err = payload && payload.error;
+                throw new Error(err && err.message ? err.message : str().genericError);
+              });
+          }
+          onDone();
+          showSuccess(str().deletedOne);
+        })
+        .catch(function (err) {
+          showError(err.message || str().genericError);
+        });
+    });
   }
 
   function renderMemory(data) {
@@ -278,6 +294,11 @@
   }
 
   function loadMemory() {
+    if (window.THUI) {
+      window.THUI.skeletons(entityList, 2);
+      window.THUI.skeletons(factList, 2);
+      window.THUI.skeletons(relationshipList, 2);
+    }
     return Session.authFetch("/api/memory")
       .then(function (response) {
         if (!response.ok) throw new Error(str().loadFailed);
@@ -285,11 +306,15 @@
       })
       .then(renderMemory)
       .catch(function (err) {
+        [entityList, factList, relationshipList].forEach(function (list) {
+          if (list) list.textContent = "";
+        });
         showError(err.message || str().loadFailed);
       });
   }
 
   function loadConsents() {
+    if (window.THUI) window.THUI.skeletons(consentList, 2);
     return Session.authFetch("/api/consents")
       .then(function (response) {
         if (!response.ok) throw new Error(str().genericError);
@@ -299,6 +324,7 @@
         renderConsents(data.consents);
       })
       .catch(function (err) {
+        if (consentList) consentList.textContent = "";
         showError(err.message || str().genericError);
       });
   }
@@ -330,24 +356,34 @@
 
   if (deleteAllButton) {
     deleteAllButton.addEventListener("click", function () {
-      if (!window.confirm(str().confirmDeleteAll)) return;
-      clearMessages();
-      Session.authFetch("/api/memory", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ confirm: true }),
-      })
-        .then(function (response) {
-          if (!response.ok) throw new Error(str().genericError);
-          return response.json();
+      var ask = window.THUI
+        ? window.THUI.confirm({
+            title: str().confirmDeleteAll,
+            confirmLabel: str().deleteAll,
+            cancelLabel: str().cancel,
+          })
+        : Promise.resolve(window.confirm(str().confirmDeleteAll));
+
+      ask.then(function (confirmed) {
+        if (!confirmed) return;
+        clearMessages();
+        Session.authFetch("/api/memory", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ confirm: true }),
         })
-        .then(function () {
-          showSuccess(str().deletedAll);
-          return loadMemory();
-        })
-        .catch(function (err) {
-          showError(err.message || str().genericError);
-        });
+          .then(function (response) {
+            if (!response.ok) throw new Error(str().genericError);
+            return response.json();
+          })
+          .then(function () {
+            showSuccess(str().deletedAll);
+            return loadMemory();
+          })
+          .catch(function (err) {
+            showError(err.message || str().genericError);
+          });
+      });
     });
   }
 

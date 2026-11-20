@@ -163,6 +163,10 @@ class TestPages(AppTestCase):
         self.assertIn(b'href="/memory"', response.data)
         self.assertIn(b'href="/schedule"', response.data)
         self.assertIn(b'href="/trusted"', response.data)
+        # chat-only UI added by the polish pass
+        self.assertIn(b'id="chat-suggestions"', response.data)
+        self.assertIn(b'id="jump-latest"', response.data)
+        self.assertIn(b"ui.js", response.data)
 
     def test_chat_page_has_language_toggle(self):
         body = self.http.get("/chat").data
@@ -1408,7 +1412,9 @@ class TestMemoryControlApi(AppTestCase):
         self.assertIn(b"memory-page.js", response.data)
         self.assertIn(b"session.js", response.data)
         self.assertIn(b"theme.js", response.data)
+        self.assertIn(b"ui.js", response.data)
         self.assertIn(b'id="consent-list"', response.data)
+        self.assertIn(b"stagger-list", response.data)
 
 
 class TestLocationConsent(AppTestCase):

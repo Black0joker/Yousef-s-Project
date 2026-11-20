@@ -37,6 +37,7 @@
       remove: "Remove",
       confirmRemove: "Remove this appointment?",
       confirmRemoveRoutine: "Remove this routine?",
+      cancel: "Cancel",
       added: "Appointment added.",
       genericError: "Something went wrong. Please try again.",
       loadFailed: "Could not load your schedule.",
@@ -69,6 +70,7 @@
       remove: "حذف",
       confirmRemove: "حذف هذا الموعد؟",
       confirmRemoveRoutine: "حذف هذا الروتين؟",
+      cancel: "إلغاء",
       added: "تمت إضافة الموعد.",
       genericError: "حدث خطأ ما. حاول مرة أخرى.",
       loadFailed: "تعذر تحميل جدولك.",
@@ -166,8 +168,10 @@
       actionButton(
         str().remove,
         function () {
-          if (!window.confirm(str().confirmRemove)) return;
-          remove("/api/appointments/" + encodeURIComponent(item.id), loadAll);
+          askConfirm(str().confirmRemove).then(function (confirmed) {
+            if (!confirmed) return;
+            remove("/api/appointments/" + encodeURIComponent(item.id), loadAll);
+          });
         },
         true
       )
@@ -202,6 +206,17 @@
       .catch(function (err) {
         showError(err.message || str().genericError);
       });
+  }
+
+  function askConfirm(message, confirmLabel) {
+    if (window.THUI) {
+      return window.THUI.confirm({
+        title: message,
+        confirmLabel: confirmLabel || str().remove,
+        cancelLabel: str().cancel,
+      });
+    }
+    return Promise.resolve(window.confirm(message));
   }
 
   function renderList(list, items, emptyEl, builder) {
@@ -273,8 +288,10 @@
             actionButton(
               str().remove,
               function () {
-                if (!window.confirm(str().confirmRemoveRoutine)) return;
-                remove("/api/routines/" + encodeURIComponent(routine.id), loadAll);
+                askConfirm(str().confirmRemoveRoutine).then(function (confirmed) {
+                  if (!confirmed) return;
+                  remove("/api/routines/" + encodeURIComponent(routine.id), loadAll);
+                });
               },
               true
             )
@@ -286,6 +303,12 @@
   }
 
   function loadAll() {
+    if (window.THUI) {
+      window.THUI.skeletons(todayList, 2);
+      window.THUI.skeletons(upcomingList, 2);
+      window.THUI.skeletons(routineList, 2);
+      window.THUI.skeletons(placeList, 2);
+    }
     return Promise.all([loadToday(), loadUpcoming(), loadRoutines(), loadPlaces()]).catch(
       function (err) {
         showError(err.message || str().loadFailed);
@@ -354,8 +377,10 @@
             actionButton(
               str().remove,
               function () {
-                if (!window.confirm(str().confirmRemovePlace)) return;
-                remove("/api/places/" + encodeURIComponent(place.id), loadAll);
+                askConfirm(str().confirmRemovePlace).then(function (confirmed) {
+                  if (!confirmed) return;
+                  remove("/api/places/" + encodeURIComponent(place.id), loadAll);
+                });
               },
               true
             )

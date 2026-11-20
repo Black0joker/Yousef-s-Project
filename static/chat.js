@@ -42,6 +42,14 @@
       loadFailed: "Could not load your conversation.",
       deleteFailed: "Could not delete that message.",
       clearFailed: "Could not clear the conversation.",
+      jumpLatest: "Latest",
+      clearTitle: "Clear this conversation?",
+      clearBody: "Every message in this thread will be deleted. What SAGE remembers stays.",
+      clearConfirm: "Clear",
+      cancel: "Cancel",
+      suggest1: "What's on today?",
+      suggest2: "Remember that...",
+      suggest3: "What do you remember about me?",
     },
     ar: {
       code: "AR",
@@ -68,6 +76,14 @@
       loadFailed: "تعذر تحميل المحادثة.",
       deleteFailed: "تعذر حذف هذه الرسالة.",
       clearFailed: "تعذر مسح المحادثة.",
+      jumpLatest: "الأحدث",
+      clearTitle: "مسح المحادثة؟",
+      clearBody: "ستُحذف كل رسالة في هذه المحادثة. أما ما يتذكره SAGE فيبقى.",
+      clearConfirm: "مسح",
+      cancel: "إلغاء",
+      suggest1: "ما عندي اليوم؟",
+      suggest2: "تذكّر أن...",
+      suggest3: "ماذا تتذكر عني؟",
     },
   };
 
@@ -139,6 +155,12 @@
   var clearLabel = document.getElementById("clear-label");
   var langToggle = document.getElementById("lang-toggle");
   var langLabel = document.getElementById("lang-label");
+  var jumpBtn = document.getElementById("jump-latest");
+  var jumpLabel = document.getElementById("jump-latest-label");
+  var suggestionsEl = document.getElementById("chat-suggestions");
+  var suggestionButtons = suggestionsEl
+    ? Array.prototype.slice.call(suggestionsEl.querySelectorAll("[data-suggest]"))
+    : [];
 
   applyLanguage();
 
@@ -147,23 +169,24 @@
 
   // The database is the source of truth: the thread is rendered from what the
   // server holds, and the composer only ever sends the new message.
-  function renderThread() {
+  function renderThread(animate) {
     Array.prototype.slice.call(messagesEl.children).forEach(function (child) {
-      if (child !== welcomeRow) child.remove();
+      if (child !== welcomeRow && child !== suggestionsEl) child.remove();
     });
     history.forEach(function (entry, index) {
       if (entry.role !== "user") {
-        addAssistantMessage(entry.content, entry.id);
+        addAssistantMessage(entry.content, entry.id, animate);
         return;
       }
       var next = history[index + 1];
-      addUserMessage(entry.content, entry.id, !!next && next.role === "assistant");
+      addUserMessage(entry.content, entry.id, !!next && next.role === "assistant", animate);
     });
     if (welcomeRow) welcomeRow.classList.toggle("hidden", history.length > 0);
+    showSuggestions(history.length === 0);
     scrollToBottom();
   }
 
-  function loadThread() {
+  function loadThread(animate) {
     return Session.authFetch("/api/conversations/current")
       .then(function (response) {
         if (!response.ok) throw new Error(str().loadFailed);
@@ -179,7 +202,7 @@
           .map(function (turn) {
             return { id: turn.id, role: turn.role, content: turn.content };
           });
-        renderThread();
+        renderThread(animate);
       })
       .catch(function () {
         /* stay usable for typing even if the initial load failed */
@@ -204,7 +227,7 @@
     });
 
   // The transcript lives in the database now: render whatever it holds.
-  loadThread();
+  loadThread(true);
 
   // --- helpers ------------------------------------------------------------
 
@@ -221,6 +244,11 @@
     welcomeBubble.textContent = strings.welcome(firstName);
     logoutLabel.textContent = strings.logout;
     if (clearLabel) clearLabel.textContent = strings.clear;
+    if (jumpLabel) jumpLabel.textContent = strings.jumpLatest;
+    suggestionButtons.forEach(function (button) {
+      var key = "suggest" + button.getAttribute("data-suggest");
+      if (strings[key]) button.textContent = strings[key];
+    });
     input.setAttribute("placeholder", strings.placeholderShort || strings.placeholder);
     input.title = strings.placeholder;
     if (langLabel) langLabel.textContent = strings.code;
@@ -255,6 +283,31 @@
 
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    syncJump();
+  }
+
+  // A streamed token must not yank the view back down while the user is reading
+  // earlier messages; only follow the reply when they are already at the end.
+  function followIfNearBottom() {
+    var distance = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+    if (distance < 120) {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+    syncJump();
+  }
+
+  function syncJump() {
+    if (!jumpBtn) return;
+    var distance = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+    var show = distance > 160;
+    jumpBtn.classList.toggle("is-visible", show);
+    jumpBtn.setAttribute("aria-hidden", show ? "false" : "true");
+    jumpBtn.tabIndex = show ? 0 : -1;
+  }
+
+  function showSuggestions(show) {
+    if (!suggestionsEl) return;
+    suggestionsEl.classList.toggle("hidden", !show);
   }
 
   // --- message rendering --------------------------------------------------
@@ -289,8 +342,11 @@
     return button;
   }
 
-  function addUserMessage(text, id, withReply) {
-    var row = el("div", "chat-row chat-row--user group animate-fade-in");
+  function addUserMessage(text, id, withReply, animate) {
+    var row = el(
+      "div",
+      "chat-row chat-row--user group" + (animate === false ? "" : " animate-fade-in")
+    );
     row.setAttribute("data-msg-id", id);
 
     var col = el("div", "chat-col chat-col--user");
@@ -309,14 +365,14 @@
     return { row: row, bubble: bubble };
   }
 
-  function addAssistantMessage(text, id) {
-    var parts = createAssistantMessage(id);
+  function addAssistantMessage(text, id, animate) {
+    var parts = createAssistantMessage(id, animate);
     parts.bubble.textContent = text;
     return parts;
   }
 
-  function createAssistantMessage(id) {
-    var row = el("div", "chat-row group animate-fade-in");
+  function createAssistantMessage(id, animate) {
+    var row = el("div", "chat-row group" + (animate === false ? "" : " animate-fade-in"));
     row.setAttribute("data-msg-id", id);
 
     var avatar = el("div", "chat-avatar");
@@ -377,7 +433,9 @@
 
   function setBusy(busy) {
     sendBtn.disabled = busy;
-    input.disabled = busy;
+    // Swap the single action: Send hides while Stop takes its place, so the
+    // composer never shows two competing buttons.
+    sendBtn.classList.toggle("hidden", busy);
     if (stopBtn) {
       stopBtn.classList.toggle("hidden", !busy);
       stopBtn.disabled = false;
@@ -386,7 +444,11 @@
     }
     statusEl.textContent = busy ? str().thinking : "";
     statusDot.style.display = busy ? "inline-block" : "none";
-    if (!busy) input.focus();
+    // Refocus only where a keyboard is already present; on a phone this would
+    // pop the keyboard open every time a reply finishes.
+    var hasHover =
+      !window.matchMedia || window.matchMedia("(hover: hover)").matches;
+    if (!busy && hasHover) input.focus();
   }
 
   function errorText(payload, status) {
@@ -443,6 +505,7 @@
     // thread when the turn ends so ids and content come from the database.
     var userEntry = { id: newId(), role: "user", content: text };
     var userParts = addUserMessage(text, userEntry.id, true);
+    showSuggestions(false);
 
     var assistantEntry = { id: newId(), role: "assistant", content: "" };
     var parts = createAssistantMessage(assistantEntry.id);
@@ -498,7 +561,7 @@
         ? toolLabel(tool.name)
         : toolDoneLabel(tool.name, tool.ok !== false);
       parts.activity.hidden = false;
-      scrollToBottom();
+      followIfNearBottom();
 
       if (!isStart) {
         activityTimer = setTimeout(function () {
@@ -542,7 +605,7 @@
             }
             answer += event.delta;
             parts.bubble.textContent = answer;
-            scrollToBottom();
+            followIfNearBottom();
           } else if (event.done) {
             if (toolRunning) hideActivity();
           } else if (event.saved) {
@@ -566,7 +629,7 @@
 
         // The stream told us the ids it stored, so there is no need to refetch
         // the thread. Only fall back to a reload if persistence failed.
-        if (!saved) return loadThread();
+        if (!saved) return loadThread(false);
         if (saved.conversation_id) conversationId = saved.conversation_id;
         adoptId(userParts, saved.user_turn_id);
         adoptId(parts, saved.assistant_turn_id);
@@ -628,6 +691,7 @@
     input.value = "";
     input.style.height = "auto";
     send(text);
+    input.focus();
   });
 
   input.addEventListener("keydown", function (event) {
@@ -705,28 +769,74 @@
     history = [];
     conversationId = null;
     Array.prototype.slice.call(messagesEl.children).forEach(function (child) {
-      if (child !== welcomeRow) child.remove();
+      if (child !== welcomeRow && child !== suggestionsEl) child.remove();
     });
     if (welcomeRow) welcomeRow.classList.remove("hidden");
+    showSuggestions(true);
     statusEl.textContent = "";
     statusDot.style.display = "none";
     input.focus();
   }
 
   clearBtn.addEventListener("click", function () {
-    clearView();
-    // Clear every thread, not just the current one: older databases hold one
-    // conversation per message, and leaving those behind would resurrect one.
-    Session.authFetch("/api/conversations", { method: "DELETE" })
-      .then(function (response) {
-        if (response.status !== 204) {
-          throw new Error(str().clearFailed);
-        }
-      })
-      .catch(function (err) {
-        markStatusError(err.message || str().clearFailed);
-      });
+    var ui = window.THUI;
+    var ask = ui
+      ? ui.confirm({
+          title: str().clearTitle,
+          message: str().clearBody,
+          confirmLabel: str().clearConfirm,
+          cancelLabel: str().cancel,
+        })
+      : Promise.resolve(window.confirm(str().clearTitle));
+
+    ask.then(function (confirmed) {
+      if (!confirmed) return;
+      clearView();
+      // Clear every thread, not just the current one: older databases hold one
+      // conversation per message, and leaving those behind would resurrect one.
+      Session.authFetch("/api/conversations", { method: "DELETE" })
+        .then(function (response) {
+          if (response.status !== 204) {
+            throw new Error(str().clearFailed);
+          }
+        })
+        .catch(function (err) {
+          markStatusError(err.message || str().clearFailed);
+        });
+    });
   });
+
+  if (jumpBtn) {
+    jumpBtn.addEventListener("click", function () {
+      // Smooth only for an explicit jump; streaming deltas scroll instantly.
+      var reduce =
+        window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (messagesEl.scrollTo) {
+        messagesEl.scrollTo({
+          top: messagesEl.scrollHeight,
+          behavior: reduce ? "auto" : "smooth",
+        });
+      } else {
+        scrollToBottom();
+      }
+      input.focus();
+    });
+  }
+
+  messagesEl.addEventListener("scroll", syncJump, { passive: true });
+
+  suggestionButtons.forEach(function (button) {
+    button.addEventListener("click", function () {
+      var label = button.textContent.trim();
+      if (!label) return;
+      input.value = label;
+      input.style.height = "auto";
+      input.style.height = Math.min(input.scrollHeight, 144) + "px";
+      input.focus();
+    });
+  });
+
+  syncJump();
 
   if (langToggle) {
     langToggle.addEventListener("click", function () {

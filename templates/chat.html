@@ -167,7 +167,7 @@
     </div>
 
     <!-- Message thread -->
-    <main class="min-h-0 flex-1 space-y-6 overflow-y-auto px-4 py-6 scroll-smooth" id="messages" aria-live="polite">
+    <main class="min-h-0 flex-1 space-y-6 overflow-y-auto px-4 py-6" id="messages" aria-live="polite">
 
       <!-- Greeting -->
       <div class="chat-row animate-fade-in" id="welcome-row">
@@ -182,7 +182,20 @@
         </div>
       </div>
 
+      <!-- Starter prompts; labels come from STRINGS so they follow the language -->
+      <div class="flex flex-wrap gap-2 ps-11" id="chat-suggestions">
+        <button type="button" class="chat-suggestion tap-style" data-suggest="1"></button>
+        <button type="button" class="chat-suggestion tap-style" data-suggest="2"></button>
+        <button type="button" class="chat-suggestion tap-style" data-suggest="3"></button>
+      </div>
+
     </main>
+
+    <!-- Appears when you scroll up while a reply is still arriving -->
+    <button type="button" class="chat-jump" id="jump-latest" aria-hidden="true" tabindex="-1">
+      <span class="material-symbols-outlined" aria-hidden="true">arrow_downward</span>
+      <span id="jump-latest-label">Latest</span>
+    </button>
 
     <!-- Composer -->
     <footer class="composer-footer sticky bottom-0 z-30 border-t border-sand-200/80 bg-gradient-to-t from-white via-white/95 to-white/80 px-4 pt-3 backdrop-blur-md dark:border-white/5 dark:from-[#141d1b] dark:via-[#141d1b]/95 dark:to-[#141d1b]/80">
@@ -217,6 +230,7 @@
   <script src="{{ url_for('static', filename='session.js') }}"></script>
   <script src="{{ url_for('static', filename='location.js') }}"></script>
   <script src="{{ url_for('static', filename='schedule-reminder.js') }}"></script>
+  <script src="{{ url_for('static', filename='ui.js') }}"></script>
   <script src="{{ url_for('static', filename='chat.js') }}"></script>
 </body>
 </html>

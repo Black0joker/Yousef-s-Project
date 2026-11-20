@@ -33,7 +33,9 @@ behavior changes. This file covers workflow and non-obvious wiring.
   IDs, request/user correlation, and rotating-file output.
 - `templates/` + `static/` — no build step. Tailwind and fonts load from CDNs,
   so the UI is unstyled offline. `theme.js` must stay before the stylesheet
-  (test-enforced). Frontend JS is plain IIFEs, not ES modules.
+  (test-enforced). Frontend JS is plain IIFEs, not ES modules. `static/ui.js`
+  holds the shared pieces (confirmation dialog, auto-dismissing success alerts,
+  skeleton rows) and is loaded before each page script.
 - `prompts/*.md` — SAGE personas, read fresh on every request (edit without
   restarting).
 - `Dockerfile`, `.dockerignore`, `railway.json` — deployment. Railway builds the
@@ -499,3 +501,22 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   into `#place-context`; a `204` hides that banner. Geolocation needs a secure
   context: `127.0.0.1` / `localhost` work, a plain-HTTP LAN IP does not.
 - `static/welcome.js` is unreferenced leftover code; `/` redirects to `/login`.
+- UI behaviour is part of the contract, not decoration:
+  - **Streaming must not yank the reader.** `followIfNearBottom()` follows the
+    reply only within ~120px of the end; otherwise `#jump-latest` appears and the
+    view stays put. Sending a message always jumps to the newest bubble.
+    `#messages` must not carry Tailwind's `scroll-smooth` — deltas must scroll
+    instantly and only the explicit jump animates.
+  - **Send and Stop share one slot** (`setBusy()` hides one and shows the other),
+    and the composer stays typable while a reply streams.
+  - **Every destructive action goes through `THUI.confirm`** (`static/ui.js`);
+    `window.confirm` is gone. Success alerts use `THUI.showSuccess`, which fades
+    them out after 4.5s. Content pages show `THUI.skeletons` while loading, so an
+    empty list never flashes before the fetch resolves.
+  - **`renderThread()` removes every `#messages` child except the welcome row and
+    `#chat-suggestions`.** Adding another persistent child means updating that
+    filter (it silently deleted the suggestions once).
+  - **Motion is centralised** in `static/style.css` (`--dur-*`, `--ease-*`,
+    `.anim-rise`, `.anim-slide-down`, `.anim-pop`, `.page-enter`, `.stagger-list`,
+    `.tap-style`, `.skeleton-line`). Every new animation must be added to the
+    `prefers-reduced-motion` block, which also disables smooth scrolling.

@@ -86,6 +86,10 @@
 
   function show(el, message) {
     if (!el) return;
+    if (el.getAttribute("role") === "status" && window.THUI) {
+      window.THUI.showSuccess(el, message);
+      return;
+    }
     el.textContent = message;
     el.classList.remove("hidden");
   }

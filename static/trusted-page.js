@@ -37,6 +37,7 @@
       see: "View activity",
       hide: "Hide",
       confirmRevoke: "Remove this trusted person? They will lose access immediately.",
+      cancel: "Cancel",
       inviteSent: "Invitation sent.",
       acceptedMsg: "Invitation accepted.",
       declinedMsg: "Invitation declined.",
@@ -79,6 +80,7 @@
       see: "عرض النشاط",
       hide: "إخفاء",
       confirmRevoke: "إزالة هذا الشخص؟ سيفقد الوصول فورًا.",
+      cancel: "إلغاء",
       inviteSent: "تم إرسال الدعوة.",
       acceptedMsg: "تمت قبول الدعوة.",
       declinedMsg: "تم رفض الدعوة.",
@@ -126,6 +128,10 @@
 
   function showSuccess(message) {
     errorEl.classList.add("hidden");
+    if (window.THUI) {
+      window.THUI.showSuccess(successEl, message);
+      return;
+    }
     successEl.textContent = message;
     successEl.classList.remove("hidden");
   }
@@ -216,15 +222,24 @@
           actionButton(
             str().revoke,
             function () {
-              if (!window.confirm(str().confirmRevoke)) return;
-              send("/api/trusted/" + encodeURIComponent(contact.id), { method: "DELETE" })
-                .then(function () {
-                  showSuccess(str().revokedMsg);
-                  return loadAll();
-                })
-                .catch(function (err) {
-                  showError(err.message || str().genericError);
-                });
+              var ask = window.THUI
+                ? window.THUI.confirm({
+                    title: str().confirmRevoke,
+                    confirmLabel: str().revoke,
+                    cancelLabel: str().cancel,
+                  })
+                : Promise.resolve(window.confirm(str().confirmRevoke));
+              ask.then(function (confirmed) {
+                if (!confirmed) return;
+                send("/api/trusted/" + encodeURIComponent(contact.id), { method: "DELETE" })
+                  .then(function () {
+                    showSuccess(str().revokedMsg);
+                    return loadAll();
+                  })
+                  .catch(function (err) {
+                    showError(err.message || str().genericError);
+                  });
+              });
             },
             true
           )
@@ -435,6 +450,11 @@
   // --- loading -----------------------------------------------------------
 
   function loadAll() {
+    if (window.THUI) {
+      window.THUI.skeletons(trustedList, 2);
+      window.THUI.skeletons(invitesList, 1);
+      window.THUI.skeletons(watchingList, 2);
+    }
     return Promise.all([
       Session.authFetch("/api/trusted").then(function (r) {
         return r.ok ? r.json() : { trusted: [] };
