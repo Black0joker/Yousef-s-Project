@@ -417,10 +417,55 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   `catch { /* already restarting */ }` swallowed it, so the mic stayed granted
   but dead for the rest of the call. Always go through `scheduleRestart()`,
   which defers by `RESTART_DELAY_MS` and re-checks `shouldBeListening()`.
+- **A rejected `start()` must never be recorded as running.** `start()` is
+  asynchronous, so `recognitionStarting` tracks the handshake separately from
+  `recognitionRunning` (which only `onstart` sets). The old code did
+  `recognitionRunning = true` on `InvalidStateError`; that left the flag true
+  with no live session, so `startListening()` early-returned, the watchdog
+  skipped it, and tapping the mic did nothing — "granted but nothing happens".
+  On rejection, schedule a retry and leave both flags honest.
+- **Mute, mute-check, and the mic button must share one predicate** —
+  `micBusy()` = `recognitionRunning || recognitionStarting || restartTimer`. The
+  handler used to test `listening` while the button painted from
+  `recognitionRunning`, so in a wedged state the button looked live and a tap
+  was a no-op.
+- `startWatchdog()` also clears a `recognitionStarting` older than
+  `START_TIMEOUT_MS`, because a dismissed permission prompt can leave a start
+  that never fires `onstart` *or* `onend` and would otherwise block every retry.
+- **Pause with `abort()`, never `stop()`.** `stop()` flushes the in-flight
+  utterance as a final result; it arrives after the turn finished and shows up
+  as a duplicate answer. `stopListening()` and `pauseRecognition()` both abort.
+- Pause the mic when audio is about to play (inside the `pumpSpeech` promise),
+  not when the clip is requested. Pausing at the top of `pumpSpeech` muted the
+  mic for the whole `/api/voice/speak` round-trip, so speaking right after
+  "Start call" hit a dead microphone.
+- `onstart` re-checks `shouldBeListening()` and aborts immediately when the
+  start was already superseded (muted, hung up, paused for playback);
+  otherwise the mic stays live under SAGE's own voice and barge-in cuts the
+  reply off.
 - Recognition state is `recognitionRunning` (set in `onstart`/`onend`), not
   `listening`, which is only a status-line hint. `startListening()` returns
-  early while running; `startWatchdog()` restarts a session that vanished
+  early while `micBusy()`; `startWatchdog()` restarts a session that vanished
   without firing `onend`.
+- The call page binds one thread per call: it keeps `X-Conversation-ID` from
+  the first stream and sends it back as `conversation_id`. Without it the legacy
+  `messages` path made `resolve_conversation` create a new conversation every
+  turn, and the orphans later surfaced as `/chat`'s "current" thread.
+- `history` is trimmed to `HISTORY_LIMIT` (20) when building the request body.
+  The server rejects a legacy `messages` array past `MAX_MESSAGES` (50), which
+  used to end the call permanently around the 26th spoken turn.
+- `window.isSecureContext` is checked before promising voice input: a plain
+  `http://` address (a LAN IP on a phone) blocks the mic in every browser, and
+  reporting that as "not available in this browser" sends people hunting for
+  the wrong problem. `microphoneUsable()` gates the button on it.
+- `tests/js/call_mic_harness.js` is the regression test for this state machine
+  (`node tests/js/call_mic_harness.js`). It is a plain Node script, not part of
+  the Python suite, because the audio never reaches the server and a wedged
+  recognizer leaves no server-side trace.
+- `localStorage.setItem("th_call_trace", "1")` turns on `[call]` lifecycle
+  logging (event names, codes, and character counts only — never the text).
+  It is off by default and is the only way to diagnose a mic failure in the
+  field.
 - `onerror` must handle every code. `not-allowed`, `service-not-allowed`,
   `audio-capture`, and `language-not-supported` are fatal (stop retrying,
   disable the mic, explain why); `network` retries with backoff;

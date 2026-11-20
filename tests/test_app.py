@@ -182,6 +182,31 @@ class TestPages(AppTestCase):
         self.assertIn(b"location.js", response.data)
         self.assertIn(b"call.css", response.data)
 
+    def test_call_script_carries_the_mic_safeguards(self):
+        """The mic state machine's invariants, asserted against the served file.
+
+        The behavioural half lives in tests/js/call_mic_harness.js; these are the
+        cheap guards that survive an accidental rewrite of call.js.
+        """
+        with open(os.path.join(ROOT, "static", "call.js"), encoding="utf-8") as handle:
+            source = handle.read()
+
+        # A rejected start() must schedule a retry, never be recorded as running.
+        self.assertNotIn(
+            "recognitionRunning = true;",
+            source.split("function startRecognitionNow")[1].split("function fatalRecognition")[0],
+            "a rejected start must not be recorded as running",
+        )
+        # Pausing must abort, not stop: stop() flushes a duplicate final result.
+        self.assertNotIn("recognition.stop()", source)
+        # The call must reuse the thread its first turn landed in.
+        self.assertIn("X-Conversation-ID", source)
+        self.assertIn("conversation_id", source)
+        # A long call must not trip the server's 50-message cap.
+        self.assertIn("HISTORY_LIMIT", source)
+        # A plain-HTTP page blocks the mic in every browser; say so.
+        self.assertIn("isSecureContext", source)
+
     def test_pages_have_theme_support(self):
         for path in ("/login", "/register", "/chat", "/settings", "/call"):
             with self.subTest(path=path):

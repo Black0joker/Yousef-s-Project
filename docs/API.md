@@ -179,6 +179,15 @@ Body:
 | `greeting` | call mode only: with no messages, inserts a synthetic user turn so the assistant opens the call |
 | `conversation_id` | optional; ignored if it isn't the caller's thread |
 
+> **Call mode and `conversation_id`.** The call page sends the `messages` array
+> (it keeps its own in-memory history) *and* the `conversation_id` it received in
+> `X-Conversation-ID` on its first turn. Omitting the id is not an error, but the
+> server then starts a **new** thread on every request, which fragments the
+> transcript into one conversation per turn. Keep the id for the duration of a
+> call. The page also trims its array to the last 20 turns, because a `messages`
+> array past 50 items is rejected with `400 invalid_request` — the cap that used
+> to end long calls permanently.
+
 When `message` is present, client-supplied `messages` are **ignored on purpose** — a
 modified client must not be able to inject assistant turns.
 

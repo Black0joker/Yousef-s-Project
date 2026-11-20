@@ -675,7 +675,25 @@ conversation:
 
 The call screen unlocks audio on the Start gesture and pauses speech recognition
 while SAGE is speaking, so the microphone cannot hear the assistant and cancel
-its own playback.
+its own playback. The mic is paused only while a clip is actually playing, not
+while the clip is being generated, so you can speak during that gap.
+
+**Speech-to-text happens in the browser.** The microphone never reaches the
+server: input goes through the browser's Web Speech API (`webkitSpeechRecognition`
+in Chrome and Edge), and only the resulting *text* is sent to `/api/chat/stream`.
+ElevenLabs is used for the opposite direction only (text → speech), so there is
+no upload endpoint and no audio in the logs. Two consequences:
+
+- Voice input needs a **secure context** — `https` or `localhost`. Opening the
+  app on a plain-HTTP LAN address (`http://192.168.x.x:5000`, e.g. from a phone)
+  blocks the microphone in every browser, and `/call` says so explicitly.
+- Firefox and Safari do not implement the API. Chrome and Edge do; Brave and
+  many Chromium builds ship without the keys for Chrome's speech service, which
+  surfaces as a `network` error and is reported as such.
+
+If the mic misbehaves, run `localStorage.setItem("th_call_trace", "1")` in the
+console and reload: `/call` then logs `[call] start`, `onstart`, `onend`,
+`onerror <code>` and the length of each final transcript (never the text).
 
 This follows the [ElevenApi](https://github.com/Black0joker/ElevenApi) approach:
 `POST /v1/text-to-dialogue/stream` with model `eleven_v4_exp` and a browser
@@ -955,7 +973,7 @@ status code.
 
 ## Tests
 
-Two suites:
+Two suites, plus a browser-state harness:
 
 ```bash
 # unit tests — offline (mock gateway, stubbed client, temp database)
@@ -963,6 +981,9 @@ python -m unittest discover -s tests -v
 
 # integration tests — live calls against tokenharbor.ai (needs TH_API_KEY)
 python -m unittest discover -s tests/integration -v
+
+# call-mode microphone state machine (plain Node, no dependencies)
+node tests/js/call_mic_harness.js
 ```
 
 The offline suite covers the `core` client, the Flask app, authentication, and
@@ -971,6 +992,17 @@ login, JWT claims and expiry, the middleware, the per-message delete/prompt
 rules, memory saves/queries, user isolation, replacement/expiry behavior, tool
 lifecycle events, structured logging, request correlation, log redaction, and
 the ElevenLabs payload/token/error handling.
+
+`tests/js/call_mic_harness.js` is separate on purpose. Speech recognition runs
+entirely in the browser, so a wedged recognizer never touches the server and
+leaves no trace the Python suite could assert on. The harness loads
+`static/call.js` into a VM with a fake `SpeechRecognition` that enforces
+Chrome's rules — asynchronous `start()`, `InvalidStateError` while a session is
+starting/running/closing, and `stop()` flushing the in-flight utterance while
+`abort()` discards it — and checks that mute round-trips, a rejected start is
+retried instead of recorded as running, a hung start times out, pausing never
+flushes a phantom duplicate turn, and a plain-HTTP page reports the
+secure-context reason.
 
 Integration tests default to the free model `deepseek-v4.1-flash:free` so they
 don't spend your balance. Override with `TH_TEST_MODEL`:

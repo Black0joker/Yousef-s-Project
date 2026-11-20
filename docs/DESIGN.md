@@ -449,6 +449,20 @@ only for the explicit jump — never animate every token.
   (`reason: "voice_quota_exceeded"` — the token is fine, the ElevenLabs account is out of
   credits), token expired, mic denied, no mic, unsupported language, network loss, or a
   browser that blocks the speech service. Callers can always type.
+- **Speech-to-text is browser-side.** Audio never reaches the server; only the
+  recognised text is sent. Native must therefore supply its own STT — there is no
+  transcription endpoint to call.
+- The mic button reads `Mute`/`Unmute` from one state predicate
+  (running *or* starting *or* a restart is scheduled), and tapping it always
+  toggles, so a stalled recognizer can never leave the button inert. A start
+  that is rejected or never answers is retried rather than recorded as running.
+- A **plain-HTTP page cannot use the microphone** in any browser. Say that
+  explicitly (`micInsecure`) instead of "not supported in this browser", and
+  disable the mic; typing still works. Native has no such restriction, but the
+  same *specific reason* rule applies to every failure it surfaces.
+- If a call has produced no recognised text at all after ~10s, show a hint that
+  the microphone is on but nothing is being recognised. Never leave
+  "Listening…" as the only feedback for a recognizer that is not working.
 
 ### 4.10 Motion
 
@@ -786,7 +800,7 @@ All user-facing copy lives in `STRINGS` maps inside these modules (each has `en`
 | Module | Screen | Keys |
 | --- | --- | --- |
 | `static/chat.js` | Chat | `code, greeting, welcome, logout, clear, placeholder, placeholderShort, thinking, noResponse, stop, toggleLang, deleteReply, deleteOne, toolSaving, toolSearching, toolSaved, toolFound, toolFailed, toolGeneric, toolAccount, toolAccountDone, loadFailed, deleteFailed, clearFailed, jumpLatest, clearTitle, clearBody, clearConfirm, cancel, suggest1, suggest2, suggest3` |
-| `static/call.js` | Call | `code, badge, title, subtitle, start, hangup, mute, unmute, ready, connecting, listening, thinking, speaking, muted, ended, logout, placeholder, you, sage, voiceUnavailable, voiceExpired, micDenied, micUnavailable, micLanguage, micNetwork, micNetworkOffline, micBraveBlocked, noSpeech, audioBlocked, error, requestFailed` |
+| `static/call.js` | Call | `code, badge, title, subtitle, start, hangup, mute, unmute, ready, connecting, listening, thinking, speaking, muted, ended, logout, placeholder, you, sage, voiceUnavailable, voiceExpired, voiceQuota, micDenied, micUnavailable, micLanguage, micNetwork, micNetworkOffline, micBraveBlocked, micInsecure, micSilent, noSpeech, audioBlocked, error, requestFailed` |
 | `static/memory-page.js` | Memory | `memoryTitle, memoryHint, export, deleteAll, empty, entities, facts, relationships, consentTitle, consentHint, delete, confirmDelete, confirmDeleteAll, cancel, deletedOne, deletedAll, exported, emptyValue, consentLocation, consentVoice, consentMemorySharing, consentFamiliarVoice, consentTrustedSharing, on, off, genericError, loadFailed` |
 | `static/schedule-page.js` | Schedule | `todayTitle, todayHint, todayEmpty, upcomingTitle, upcomingEmpty, titleLabel, whenLabel, placeLabel, add, routinesTitle, routinesHint, routinesEmpty, placesTitle, placesHint, placesEmpty, placeNameLabel, radiusLabel, saveHere, placeSaved, confirmRemovePlace, locationOff, locationDenied, done, remove, confirmRemove, confirmRemoveRoutine, cancel, added, genericError, loadFailed, required` |
 | `static/trusted-page.js` | Trusted | `trustedTitle, trustedHint, trustedEmpty, emailLabel, allowLastSeen, allowLocation, sendInvite, invitesTitle, invitesEmpty, watchingTitle, watchingEmpty, sharingTitle, sharingHint, sharingOn, sharingOff, notSharing, paused, pending, accepted, revoked, revoke, accept, decline, see, hide, confirmRevoke, cancel, inviteSent, acceptedMsg, declinedMsg, revokedMsg, lastSeen, neverSeen, warning, location, locationHidden, staleBadge, activeBadge, unknownBadge, genericError, loadFailed` |

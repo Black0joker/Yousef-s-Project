@@ -37,6 +37,8 @@
       micNetwork: "Speech recognition lost its connection. Retrying...",
       micNetworkOffline: "Speech recognition is unavailable right now (the browser could not reach its speech service). You can still type, or try Chrome again later.",
       micBraveBlocked: "This browser blocks Chrome's speech service, so voice input cannot work. Open the call page in Google Chrome or Microsoft Edge, or type instead.",
+      micInsecure: "Voice input needs a secure page (https or localhost). A plain http:// address blocks the microphone. You can still type.",
+      micSilent: "The microphone is on but nothing is being recognised. Check that the right microphone is selected, or type instead.",
       noSpeech: "Speech recognition is not available in this browser. You can still type.",
       audioBlocked: "The browser blocked audio. Tap Start call once, then try again.",
       error: "Something went wrong.",
@@ -71,6 +73,8 @@
       micNetwork: "انقطع اتصال التعرف على الكلام. جارٍ إعادة المحاولة...",
       micNetworkOffline: "التعرف على الكلام غير متاح حاليًا (لم يستطع المتصفح الوصول إلى خدمة الكلام). يمكنك الكتابة، أو حاول باستخدام Chrome لاحقًا.",
       micBraveBlocked: "هذا المتصفح يحجب خدمة الكلام الخاصة بـ Chrome، لذا لا يمكن استخدام الإدخال الصوتي. افتح صفحة المكالمة في Google Chrome أو Microsoft Edge، أو اكتب بدلًا من ذلك.",
+      micInsecure: "الإدخال الصوتي يحتاج صفحة آمنة (https أو localhost). العنوان http:// العادي يحجب الميكروفون. يمكنك الكتابة بدلًا من ذلك.",
+      micSilent: "الميكروفون يعمل لكن لم يتم التعرف على أي كلام. تأكد من اختيار الميكروفون الصحيح، أو اكتب بدلًا من ذلك.",
       noSpeech: "التعرف على الكلام غير متاح في هذا المتصفح. يمكنك الكتابة.",
       audioBlocked: "منع المتصفح تشغيل الصوت. اضغط «بدء المكالمة» مرة ثم حاول مجددًا.",
       error: "حدث خطأ ما.",
@@ -113,6 +117,28 @@
     });
   }
 
+  // Lifecycle tracing for the mic. "I spoke and nothing happened" is
+  // undiagnosable from the outside: the audio never reaches our server, so the
+  // only record of a failed recognizer is here. Event names, codes and counts
+  // only -- never the recognised text.
+  var TRACE = (function () {
+    try {
+      return localStorage.getItem("th_call_trace") === "1";
+    } catch (err) {
+      return false;
+    }
+  })();
+
+  function trace(event, detail) {
+    if (!TRACE) return;
+    try {
+      if (detail === undefined) console.info("[call] " + event);
+      else console.info("[call] " + event, detail);
+    } catch (err) {
+      /* console unavailable */
+    }
+  }
+
   // --- elements -----------------------------------------------------------
 
   var greetingEl = document.getElementById("greeting");
@@ -151,6 +177,15 @@
   var voiceReady = Promise.resolve();
   var recognitionPaused = false;
   var audioUnlocked = false;
+  // The conversation this call is bound to, captured from the first stream's
+  // X-Conversation-ID. Without it every spoken turn asks the server to start a
+  // fresh thread (conversations.resolve_conversation creates one when the id is
+  // missing), so one call left dozens of orphan threads in the database.
+  var conversationId = null;
+  // The server caps a legacy `messages` array at MAX_MESSAGES (50) and rejects
+  // the whole request past that, which used to kill the call on ~the 26th spoke
+  // turn. Trim to the most recent turns so a long call keeps working.
+  var HISTORY_LIMIT = 20;
 
   // A short silent WAV. Playing it inside the Start-call gesture unlocks later
   // programmatic playback of the real voice clips in stricter browsers.
@@ -279,6 +314,9 @@
   var RESTART_DELAY_MS = 300;
   // Chrome sometimes ends a continuous session without firing onend at all.
   var WATCHDOG_MS = 1500;
+  // A start() that never answers onstart or onend has to time out, or the
+  // "starting" flag blocks every restart attempt for the rest of the call.
+  var START_TIMEOUT_MS = 8000;
   // A "network" error means Chrome could not reach its own speech service.
   // Retrying forever leaves the user staring at a spinner, so give up after a
   // few attempts and say plainly that typing is the way forward.
@@ -287,8 +325,22 @@
   var restartTimer = null;
   var watchdogTimer = null;
   var recognitionRunning = false;
+  // True between calling recognition.start() and the session's onstart/onend.
+  // Chrome's start is asynchronous, and a stop() issued in that window cancels
+  // the pending session outright. Tracking it separately keeps startRecognitionNow
+  // from firing a second start (which Chrome rejects) and keeps the mic button
+  // honest while the handshake is in flight.
+  var recognitionStarting = false;
+  var recognitionStartingAt = 0;
   var recognitionFatal = false;
   var restartAttempts = 0;
+  // Fires if a call has run for a while without a single result ever arriving.
+  // A call that has heard anything at all is never nagged, so normal pauses
+  // between sentences cannot trigger it.
+  var silenceTimer = null;
+  var SILENCE_HINT_MS = 10000;
+  var heardAnyResult = false;
+  var silenceHintShown = false;
 
   function clearRestartTimer() {
     if (restartTimer !== null) {
@@ -297,12 +349,45 @@
     }
   }
 
+  function clearSilenceTimer() {
+    if (silenceTimer !== null) {
+      window.clearTimeout(silenceTimer);
+      silenceTimer = null;
+    }
+  }
+
+  function armSilenceTimer() {
+    clearSilenceTimer();
+    if (heardAnyResult || silenceHintShown) return;
+    silenceTimer = window.setTimeout(function () {
+      silenceTimer = null;
+      if (heardAnyResult || silenceHintShown) return;
+      // Only while the call still wants the mic: a pause for playback or a
+      // hang-up is not a fault and must not be reported as one.
+      if (!shouldBeListening() && !recognitionRunning) return;
+      silenceHintShown = true;
+      trace("silent");
+      showError(str().micSilent);
+    }, SILENCE_HINT_MS);
+  }
+
   function shouldBeListening() {
-    return active && !manualStop && !recognitionPaused && !speechBusy && !recognitionFatal;
+    // `recognitionPaused` is the playback guard now (pauseRecognition runs
+    // right before audio.play()), so the fetch phase keeps the mic live and
+    // the user can barge in while SAGE's next clip is still being generated.
+    return active && !manualStop && !recognitionPaused && !recognitionFatal;
+  }
+
+  // One predicate for both the button's appearance and its click handler. They
+  // used to disagree (the handler tested `listening`, the button painted from
+  // recognitionRunning), so in a wedged state the button looked live but tap did
+  // nothing -- and there was no way to un-wedge the mic.
+  function micBusy() {
+    return recognitionRunning || recognitionStarting || restartTimer !== null;
   }
 
   function updateMicButton() {
-    var on = recognitionRunning || restartTimer !== null;
+    var on = micBusy();
     micBtn.setAttribute("aria-pressed", on ? "true" : "false");
     micLabel.textContent = on ? str().mute : str().unmute;
   }
@@ -318,17 +403,33 @@
   }
 
   function startRecognitionNow() {
-    if (!recognition || recognitionFatal || recognitionRunning) return;
+    if (!recognition || recognitionFatal || recognitionRunning || recognitionStarting) return;
+    // Mark the handshake before start() so onstart cannot be mistaken for a
+    // fresh session and a stop() in the same tick is not swallowed.
+    recognitionStarting = true;
+    recognitionStartingAt = Date.now();
     try {
       recognition.start();
+      trace("start");
+      // Repaint now, not on onstart: the handshake can take a moment, and the
+      // button must read "Mute" as soon as the mic is being opened or a second
+      // tap looks like it did nothing.
+      updateMicButton();
     } catch (err) {
-      // "already started" is harmless; anything else means the session was
-      // rejected, so try again after a delay rather than dying silently.
+      recognitionStarting = false;
+      recognitionStartingAt = 0;
       if (err && err.name === "InvalidStateError") {
-        recognitionRunning = true;
+        // Chrome refuses a start while another is still in flight. Do NOT mark
+        // the session running here: doing so left recognitionRunning stuck true
+        // with no live session, which early-returned startListening(), skipped
+        // the watchdog, and left the mic granted but deaf for the whole call.
+        trace("start.rejected", { name: err.name });
+        scheduleRestart(RESTART_DELAY_MS * 2);
       } else {
+        trace("start.error", { name: err && err.name });
         scheduleRestart(RESTART_DELAY_MS * 2);
       }
+      updateMicButton();
     }
   }
 
@@ -336,6 +437,8 @@
     recognitionFatal = true;
     manualStop = true;
     clearRestartTimer();
+    clearSilenceTimer();
+    recognitionStarting = false;
     micBtn.disabled = true;
     recognitionRunning = false;
     updateMicButton();
@@ -369,14 +472,36 @@
     recognition.onstart = function () {
       listening = true;
       recognitionRunning = true;
+      recognitionStarting = false;
+      recognitionStartingAt = 0;
       updateMicButton();
+      trace("onstart", { wanted: shouldBeListening() });
+      // A start that was already superseded (muted, hung up, or paused for
+      // playback) must not stay open: the microphone would be live while SAGE
+      // speaks and barge-in would cut the reply off.
+      if (!shouldBeListening()) {
+        try {
+          recognition.abort();
+        } catch (err) {
+          /* already stopped */
+        }
+        recognitionRunning = false;
+        listening = false;
+        updateMicButton();
+        return;
+      }
+      armSilenceTimer();
       if (!busy && !speechBusy) setCallStatus(str().listening, "listening");
     };
 
     recognition.onend = function () {
       listening = false;
       recognitionRunning = false;
+      recognitionStarting = false;
+      recognitionStartingAt = 0;
+      clearSilenceTimer();
       updateMicButton();
+      trace("onend", { restarting: shouldBeListening() });
       if (shouldBeListening()) {
         // never restart synchronously: Chrome rejects that
         scheduleRestart(RESTART_DELAY_MS);
@@ -388,6 +513,11 @@
     recognition.onerror = function (event) {
       var code = event && event.error ? event.error : "";
       recognitionRunning = false;
+      recognitionStarting = false;
+      recognitionStartingAt = 0;
+      clearSilenceTimer();
+      updateMicButton();
+      trace("onerror", { code: code });
 
       if (code === "not-allowed" || code === "service-not-allowed") {
         fatalRecognition(str().micDenied);
@@ -433,6 +563,8 @@
       // network retry budget starts fresh. Resetting on onstart would defeat
       // the cap: a failing session still fires onstart before its error.
       restartAttempts = 0;
+      heardAnyResult = true;
+      clearSilenceTimer();
       // barge-in: the user started talking, so stop the assistant's audio
       if (heard.trim() && (currentAudio || speechBusy)) {
         stopSpeech();
@@ -445,6 +577,7 @@
         }
       }
       if (!finalText.trim()) return;
+      trace("final", { chars: finalText.trim().length });
       if (busy) {
         pendingSpeechText.push(finalText.trim());
         return;
@@ -460,8 +593,17 @@
   function startWatchdog() {
     if (watchdogTimer !== null) return;
     watchdogTimer = window.setInterval(function () {
+      // A start() that never produced onstart or onend (Chrome can do this when
+      // the permission prompt is dismissed) would otherwise block every restart
+      // forever, because micBusy() keeps reporting "starting".
+      if (recognitionStarting && Date.now() - recognitionStartingAt > START_TIMEOUT_MS) {
+        trace("start.timeout", { waited_ms: Date.now() - recognitionStartingAt });
+        recognitionStarting = false;
+        recognitionStartingAt = 0;
+        updateMicButton();
+      }
       if (!shouldBeListening()) return;
-      if (recognitionRunning || restartTimer !== null) return;
+      if (micBusy()) return;
       scheduleRestart(0);
     }, WATCHDOG_MS);
   }
@@ -475,7 +617,7 @@
       recognitionFatal = false;
       micBtn.disabled = false;
     }
-    if (recognitionRunning) {
+    if (micBusy()) {
       updateMicButton();
       return;
     }
@@ -486,15 +628,20 @@
   function stopListening() {
     manualStop = true;
     clearRestartTimer();
+    clearSilenceTimer();
     if (recognition) {
       try {
-        recognition.stop();
+        // abort() throws away the in-flight utterance. stop() would flush it as
+        // a final result, which arrives after the turn already finished and
+        // shows up as a second, duplicate answer.
+        recognition.abort();
       } catch (err) {
         /* already stopped */
       }
     }
     listening = false;
     recognitionRunning = false;
+    recognitionStarting = false;
     updateMicButton();
   }
 
@@ -504,19 +651,26 @@
     if (!recognition) return;
     recognitionPaused = true;
     clearRestartTimer();
-    if (recognitionRunning) {
+    clearSilenceTimer();
+    if (recognitionRunning || recognitionStarting) {
       try {
-        recognition.stop();
+        // abort(), not stop(): a stop() flushes the current utterance as a
+        // final result right as the assistant starts speaking, so the words the
+        // user just said came back as a phantom duplicate turn.
+        recognition.abort();
       } catch (err) {
         /* already stopped */
       }
     }
+    recognitionRunning = false;
+    recognitionStarting = false;
+    updateMicButton();
   }
 
   function resumeRecognition() {
     recognitionPaused = false;
     if (!shouldBeListening()) return;
-    if (recognitionRunning || restartTimer !== null) return;
+    if (micBusy()) return;
     scheduleRestart(RESTART_DELAY_MS);
   }
 
@@ -580,12 +734,20 @@
     streamAbort = controller;
 
     var body = {
-      messages: history.map(function (m) {
+      // Only the most recent turns: the server rejects a legacy `messages`
+      // array past MAX_MESSAGES (50) with a 400, which used to end the call
+      // permanently around the 26th spoken turn.
+      messages: history.slice(-HISTORY_LIMIT).map(function (m) {
         return { role: m.role, content: m.content };
       }),
       language: lang,
       mode: "call"
     };
+    // Reuse the thread the first turn landed in. Without this the server
+    // started a fresh conversation on every turn (resolve_conversation creates
+    // one when the id is missing), leaving dozens of orphan threads that later
+    // surfaced as the chat page's "current" thread.
+    if (conversationId) body.conversation_id = conversationId;
     if (greeting) body.greeting = true;
 
     // Speak whole text segments, not sentences. A tool call is a natural
@@ -606,6 +768,8 @@
     })
       .then(function (response) {
         streamId = response.headers.get("X-Stream-ID");
+        if (!conversationId) conversationId = response.headers.get("X-Conversation-ID");
+        trace("stream.open", { status: response.status, hasThread: !!conversationId });
         if (!response.ok || !response.body) {
           return readJsonSafe(response).then(function (payload) {
             throw new Error(errorText(payload, response.status));
@@ -702,7 +866,6 @@
     var item = speechQueue.shift();
     speechBusy = true;
     var generation = speechGeneration;
-    pauseRecognition();
     setCallStatus(str().speaking, "speaking");
 
     item.promise
@@ -722,6 +885,11 @@
         }
         audio.onended = done;
         audio.onerror = done;
+        // Pause the mic only now, when sound is actually about to come out of
+        // the speaker. Pausing at the top of pumpSpeech muted it for the whole
+        // ElevenLabs round-trip, so speaking right after "Start call" fell into
+        // a dead microphone.
+        pauseRecognition();
         var playback = audio.play();
         if (playback && playback.catch) {
           playback.catch(function () {
@@ -772,20 +940,66 @@
 
   // --- call lifecycle -----------------------------------------------------
 
+  // A page without a secure context cannot use the microphone at all, and
+  // startCall would otherwise re-enable the button the boot check disabled.
+  function microphoneUsable() {
+    return recognitionAvailable && window.isSecureContext;
+  }
+
+  // Ask the browser for the microphone inside the Start-call gesture, then
+  // begin recognition once that settles. Starting recognition before the
+  // greeting raced its first clip: the pause for that audio aborted a start
+  // that was still pending, and Chrome then rejected every later start with
+  // InvalidStateError -- the "mic is on but nothing happens" failure.
+  function primeMicrophone() {
+    if (!microphoneUsable()) {
+      updateMicButton();
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      // Older browsers still expose SpeechRecognition without getUserMedia.
+      if (shouldBeListening()) startListening();
+      return;
+    }
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then(function (stream) {
+        // Release our handle; SpeechRecognition opens its own capture.
+        stream.getTracks().forEach(function (track) {
+          try {
+            track.stop();
+          } catch (err) {
+            /* already stopped */
+          }
+        });
+      })
+      .catch(function (err) {
+        // Denied or no device: let SpeechRecognition report the specific code
+        // (not-allowed / audio-capture) rather than guessing here.
+        trace("mic.permission.failed", { name: err && err.name });
+      })
+      .then(function () {
+        // If SAGE is already speaking, stay paused; finishSpeech() resumes us.
+        if (active && !recognitionFatal && shouldBeListening()) startListening();
+      });
+  }
+
   function startCall(firstText) {
     if (active) return;
     unlockAudio();
     active = true;
     history = [];
+    conversationId = null;
+    heardAnyResult = false;
+    silenceHintShown = false;
     transcript.innerHTML = "";
     startBtn.classList.add("hidden");
     hangupBtn.classList.remove("hidden");
     micBtn.classList.remove("hidden");
-    micBtn.disabled = !recognitionAvailable;
+    micBtn.disabled = !microphoneUsable();
     setCallStatus(str().connecting, "listening");
     startWatchdog();
-    if (recognitionAvailable) startListening();
-    else updateMicButton();
+    primeMicrophone();
     if (firstText) sendTurn(firstText, false);
     else sendTurn(null, true);
   }
@@ -813,7 +1027,10 @@
     if (streamAbort) streamAbort.abort();
     streamAbort = null;
     streamId = null;
+    conversationId = null;
     pendingSpeechText = [];
+    heardAnyResult = false;
+    silenceHintShown = false;
     startBtn.classList.remove("hidden");
     hangupBtn.classList.add("hidden");
     micBtn.classList.add("hidden");
@@ -828,8 +1045,8 @@
   hangupBtn.addEventListener("click", stopCall);
 
   micBtn.addEventListener("click", function () {
-    if (!recognitionAvailable) return;
-    if (listening || restartTimer !== null) {
+    if (!microphoneUsable()) return;
+    if (micBusy()) {
       stopListening();
       setCallStatus(str().muted, null);
     } else {
@@ -883,7 +1100,16 @@
   if (!Session.requireSession()) return;
   applyLanguage();
   setupRecognition();
-  if (!recognitionAvailable) showError(str().noSpeech);
+  // Report the most specific reason available: a plain-HTTP page blocks the
+  // microphone in every browser, and saying "not available in this browser"
+  // there sends people hunting for a browser problem that does not exist.
+  if (!window.isSecureContext) {
+    micBtn.disabled = true;
+    showError(str().micInsecure);
+    trace("insecure-context");
+  } else if (!recognitionAvailable) {
+    showError(str().noSpeech);
+  }
 
   Session.authFetch("/api/auth/me")
     .then(function (response) {
