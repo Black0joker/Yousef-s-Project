@@ -48,7 +48,7 @@
   <div class="app-shell mx-auto flex w-full max-w-[880px] flex-col bg-white shadow-[0_0_60px_-24px_rgba(15,61,51,0.25)] dark:bg-[#141d1b] border-x border-sand-200/80 dark:border-white/5">
 
     <!-- Top app bar -->
-    <header class="sticky top-0 z-40 w-full border-b border-sand-200/80 bg-white/85 backdrop-blur-md dark:border-white/5 dark:bg-[#141d1b]/85">
+    <header class="app-header sticky top-0 z-40 w-full border-b border-sand-200/80 bg-white/85 backdrop-blur-md dark:border-white/5 dark:bg-[#141d1b]/85">
       <div class="flex h-14 items-center justify-between gap-2 px-4">
 
         <div class="flex min-w-0 items-center gap-2.5">
@@ -167,7 +167,7 @@
     </div>
 
     <!-- Message thread -->
-    <main class="min-h-0 flex-1 space-y-6 overflow-y-auto px-4 py-6" id="messages" aria-live="polite">
+    <main class="page-enter min-h-0 flex-1 space-y-6 overflow-y-auto px-4 py-6" id="messages" aria-live="polite">
 
       <!-- Greeting -->
       <div class="chat-row animate-fade-in" id="welcome-row">

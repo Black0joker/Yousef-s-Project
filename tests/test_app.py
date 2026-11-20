@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -206,6 +207,91 @@ class TestPages(AppTestCase):
         self.assertIn("HISTORY_LIMIT", source)
         # A plain-HTTP page blocks the mic in every browser; say so.
         self.assertIn("isSecureContext", source)
+
+    def test_every_animation_respects_reduced_motion(self):
+        """Every keyframe and animation must be switched off for reduced motion.
+
+        AGENTS.md makes this a hard requirement, but nothing enforced it, so a
+        new animation could quietly ignore the preference. This parses the two
+        stylesheets rather than trusting the author to remember.
+        """
+        reduced = re.compile(
+            r"@media\s*\(prefers-reduced-motion:\s*reduce\)(.*?)\n\}", re.S
+        )
+
+        for name in ("style.css", "call.css"):
+            with self.subTest(stylesheet=name):
+                path = os.path.join(ROOT, "static", name)
+                with open(path, encoding="utf-8") as handle:
+                    css = handle.read()
+
+                blocks = reduced.findall(css)
+                self.assertTrue(blocks, f"{name} has no prefers-reduced-motion block")
+                guard = "\n".join(blocks)
+
+                keyframes = set(re.findall(r"@keyframes\s+([A-Za-z0-9_-]+)", css))
+                self.assertTrue(keyframes, f"{name} defines no keyframes")
+
+                # Comments would otherwise be captured as part of a selector.
+                bare = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+
+                # Every keyframe must be neutralised in the reduced-motion
+                # block, either by name or through a class that applies it.
+                # A keyframe nothing disables is a bug waiting for a user with
+                # vestibular sensitivity.
+                for frame in sorted(keyframes):
+                    users = set()
+                    for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", bare):
+                        if re.search(
+                            r"animation(?:-name)?\s*:[^;]*\b" + re.escape(frame) + r"\b",
+                            body,
+                        ):
+                            users.add(selector.strip())
+
+                    # A compound selector like `.chat-row--user.anim-bubble-in`
+                    # is disabled through any one of its classes, because the
+                    # guard uses `!important` on `.anim-bubble-in`.
+                    classes = set()
+                    for user in users:
+                        classes.update(re.findall(r"\.([A-Za-z0-9_-]+)", user))
+
+                    disabled = frame in guard or any(
+                        "." + name in guard for name in classes
+                    )
+                    self.assertTrue(
+                        disabled,
+                        f"{name}: @keyframes {frame} (used by "
+                        f"{sorted(users) or 'nothing'}) is not disabled for reduced motion",
+                    )
+
+    def test_reduced_motion_disables_animation_not_just_slows_it(self):
+        """`animation: none` must actually be present, not merely a duration."""
+        with open(os.path.join(ROOT, "static", "style.css"), encoding="utf-8") as handle:
+            css = handle.read()
+        blocks = re.findall(
+            r"@media\s*\(prefers-reduced-motion:\s*reduce\)(.*?)\n\}", css, re.S
+        )
+        self.assertTrue(any("animation: none" in block for block in blocks))
+
+    def test_chat_bubbles_use_the_shared_motion_system(self):
+        """The thread must not fall back to the legacy one-off animation."""
+        with open(os.path.join(ROOT, "static", "chat.js"), encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertNotIn(
+            "animate-fade-in",
+            source,
+            "chat.js should use .anim-bubble-in from the motion system",
+        )
+        self.assertIn("anim-bubble-in", source)
+
+    def test_app_bar_has_a_scrolled_state(self):
+        """The header must separate from the thread once it scrolls under it."""
+        with open(os.path.join(ROOT, "static", "chat.js"), encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("is-scrolled", source)
+        with open(os.path.join(ROOT, "templates", "chat.html"), encoding="utf-8") as handle:
+            template = handle.read()
+        self.assertIn("app-header", template)
 
     def test_pages_have_theme_support(self):
         for path in ("/login", "/register", "/chat", "/settings", "/call"):

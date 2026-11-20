@@ -360,10 +360,20 @@ hint text        ← 12px, brand-500 / sand-400
 
 ### 4.5 Consent toggle (memory page)
 
-A row: label on the left, a pill button on the right that reads **On** (granted,
-`brand-100`/`brand-800`) or **Off** (not granted, `sand-100`/`brand-600`). Tapping
+A row: label on the left, a **switch** on the right — a 44×24px pill with a sliding
+knob, followed by the word **On** (granted) or **Off** (not granted). Tapping
 `PUT`s the new value and re-renders from the response. Explanatory hint above the
 list: *"Turn these off at any time. Nothing is shared without your permission."*
+
+- The button carries `role="switch"` and `aria-checked`, so the state is exposed to
+  assistive tech without reading the label text.
+- **The knob is the affordance, the word is the contract.** Colour and position
+  alone would be the only signal without the text, which breaks the rule that a
+  toggle reads its state in words.
+- The knob slides 20px with `--dur-base` / `--ease-pop`; under reduced motion the
+  transition is removed and the state jumps, which is correct for a switch.
+- On the trusted page the same control sits inside a pill with `sharing on` /
+  `sharing off` as its words.
 
 Kinds shown: **Location** (`location`), **Voice replies** (`voice`),
 **Share memory with trusted people** (`memory_sharing`), **Familiar voice**
@@ -441,7 +451,10 @@ only for the explicit jump — never animate every token.
 ```
 
 - Orb: 104px gradient circle with `spa` at 36px; `listening` pulse 1.6s, `speaking`
-  pulse 1.1s (ring expanding 0 → 18px, fading). Disabled under reduced motion.
+  pulse 1.1s (ring expanding 0 → 18px, fading). Before the call starts it **breathes**
+  on a slow 4.5s scale, so the idle stage is not a dead circle; the slower cadence also
+  keeps it visually distinct from the listening pulse. All three are disabled under
+  reduced motion.
 - Buttons appear progressively: `Start call` → `Hang up` + `Mute` once the call is live.
 - Transcript bubbles mirror the chat bubbles (assistant tinted, user filled) with a
   small uppercase speaker label; a pending (not yet spoken) bubble is 65% opacity.
@@ -483,16 +496,36 @@ Named effects:
 | `.anim-rise` | fade + 8px lift | list rows, empty states |
 | `.anim-slide-down` | fade + 6px drop | alerts, banners |
 | `.anim-pop` | scale-in | dialog card, auth card |
-| `.page-enter` | 420ms fade | `<main>` of content pages |
+| `.anim-bubble-in` | fade + 10px horizontal slide, directional | chat rows |
+| `.page-enter` | 420ms fade | `<main>` of every page |
+| `.empty-float` | fade + 6px drift | empty states |
 | `.tap-style` | `active:scale(.97)` | chips, tabs |
+| `.hover-lift` | 1px raise + soft shadow | cards, list rows (pointer only) |
+| `.switch` / `.switch-knob` | knob slides 20px | consent toggles |
+| `.is-thinking` | highlight sweeps the status text | composer status line |
+| `.brand-blob` | 18–26s drift | auth brand panel |
+| `.app-header.is-scrolled` | border + shadow seam | chat/call app bar |
+
+**Directional bubbles.** Assistant rows enter from the inline start, user rows from the
+end, so the direction of a message reads before its text does. CSS transforms are
+physical, not logical, so `[dir="rtl"]` swaps the two animations explicitly rather than
+relying on the class name.
+
+**The app bar separates on scroll.** `.is-scrolled` adds a hairline border plus a shadow
+once the thread has scrolled under it. A shadow alone is nearly invisible in dark mode,
+so the border is what actually carries the seam there.
 
 Lists with `.stagger-list` animate their rows 30ms apart, capped at 6 rows so long lists
 stay snappy. Only `transform` and `opacity` are animated.
 
 **Reduced motion is a hard requirement:** one `prefers-reduced-motion` block disables
-every entrance animation, the stagger delays, the skeleton shimmer, the typing dots,
-the stream caret, the call-orb pulse, the jump-pill transition and smooth scrolling. Any
-new animation must be added to that block.
+every entrance animation, the stagger delays, the skeleton shimmer, the typing dots, the
+stream caret, the call-orb pulse and idle breath, the jump-pill transition, the toggle
+knob transition, the hover lift and smooth scrolling. `.is-thinking` also drops
+`background-clip: text` there — turning the animation off without restoring a real colour
+would leave the text invisible. Any new animation must be added to that block;
+`tests/test_app.py::test_every_animation_respects_reduced_motion` parses both stylesheets
+and fails if a `@keyframes` is not neutralised, so this is enforced.
 
 ### 4.11 Confirmation dialog
 

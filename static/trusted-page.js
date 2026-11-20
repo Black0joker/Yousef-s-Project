@@ -165,7 +165,7 @@
   function card(mainText, subText) {
     var item = el(
       "li",
-      "flex items-start justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
+      "hover-lift flex items-start justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
     );
     var body = el("div", "min-w-0");
     body.appendChild(el("p", "break-words text-sm text-brand-900 dark:text-sand-100", mainText));
@@ -402,12 +402,27 @@
   function renderSharing(granted) {
     sharingGranted = granted;
     if (!sharingToggle) return;
-    sharingToggle.textContent = granted ? str().sharingOn : str().sharingOff;
+    // Keep the knob and the words in step; the words are the contract, the
+    // knob is the affordance.
+    sharingToggle.setAttribute("aria-checked", granted ? "true" : "false");
     sharingToggle.className =
-      "shrink-0 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors " +
+      "shrink-0 flex items-center gap-2 rounded-full px-2.5 py-1.5 text-xs font-semibold transition-colors " +
       (granted
-        ? "bg-brand-100 text-brand-800 hover:bg-brand-200 dark:bg-brand-900/60 dark:text-brand-100 dark:hover:bg-brand-800"
-        : "bg-amber-100 text-amber-800 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200 dark:hover:bg-amber-900/60");
+        ? "bg-brand-50 text-brand-800 dark:bg-brand-900/40 dark:text-brand-100"
+        : "bg-amber-50 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200");
+
+    var knob = sharingToggle.querySelector(".switch");
+    if (!knob) {
+      knob = el("span", "switch");
+      knob.appendChild(el("span", "switch-knob"));
+      sharingToggle.insertBefore(knob, sharingToggle.firstChild);
+    }
+    var words = sharingToggle.querySelector(".switch-words");
+    if (!words) {
+      words = el("span", "switch-words");
+      sharingToggle.appendChild(words);
+    }
+    words.textContent = granted ? str().sharingOn : str().sharingOff;
   }
 
   function loadSharing() {

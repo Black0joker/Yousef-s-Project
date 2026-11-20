@@ -571,6 +571,32 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
     `#chat-suggestions`.** Adding another persistent child means updating that
     filter (it silently deleted the suggestions once).
   - **Motion is centralised** in `static/style.css` (`--dur-*`, `--ease-*`,
-    `.anim-rise`, `.anim-slide-down`, `.anim-pop`, `.page-enter`, `.stagger-list`,
-    `.tap-style`, `.skeleton-line`). Every new animation must be added to the
-    `prefers-reduced-motion` block, which also disables smooth scrolling.
+    `.anim-rise`, `.anim-slide-down`, `.anim-pop`, `.anim-bubble-in`,
+    `.page-enter`, `.empty-float`, `.stagger-list`, `.tap-style`, `.hover-lift`,
+    `.switch`, `.is-thinking`, `.brand-blob`, `.skeleton-line`). Every new
+    animation must be added to the `prefers-reduced-motion` block, which also
+    disables smooth scrolling. `tests/test_app.py`
+    (`test_every_animation_respects_reduced_motion`) parses both stylesheets and
+    fails when a `@keyframes` is not neutralised, so this is enforced rather than
+    remembered.
+  - **Chat bubbles enter directionally** (`.anim-bubble-in`: assistant from the
+    inline start, user from the end) instead of the legacy one-off
+    `animate-fade-in`. Transforms are physical, so `[dir="rtl"]` overrides flip
+    the axis — `chat.js` must not reintroduce `animate-fade-in`.
+  - **The app bar gains `.is-scrolled`** once the thread scrolls under it, set by
+    `syncHeader()` from the `#messages` scroll handler. A shadow alone is nearly
+    invisible in dark mode, so the state pairs it with a border.
+  - **Consent and sharing toggles are `role="switch"`** with a sliding
+    `.switch-knob`, and still carry the On/Off words: the motion is the
+    affordance, the text is the contract (`docs/DESIGN.md` §4.5). The knob's
+    state selectors key off `[aria-checked="true"]` on the ancestor button, not
+    on the wrapper.
+  - **`.is-thinking`** sweeps a highlight across the status line while a reply is
+    pending; the reduced-motion block replaces it with plain inherited colour,
+    because disabling the animation alone would leave `background-clip: text`
+    with invisible text.
+  - **`hover-lift` is pointer-only** (`@media (hover: hover)`); on touch the
+    lifted state would stick after the tap.
+  - Stitch (`projects/15228915200711703973`) holds reference mockups only. It
+    generates static HTML with its own token names and cannot express animation,
+    so it is inspiration, never a source of truth.

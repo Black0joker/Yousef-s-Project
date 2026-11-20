@@ -147,7 +147,7 @@
   function appointmentRow(item, withDone) {
     var row = el(
       "li",
-      "flex items-start justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
+      "hover-lift flex items-start justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
     );
     var body = el("div", "min-w-0");
     body.appendChild(el("p", "break-words text-sm text-brand-900 dark:text-sand-100", item.title));
@@ -270,7 +270,7 @@
         items.forEach(function (routine) {
           var row = el(
             "li",
-            "flex items-center justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
+            "hover-lift flex items-center justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
           );
           var body = el("div", "min-w-0");
           body.appendChild(
@@ -359,7 +359,7 @@
         items.forEach(function (place) {
           var row = el(
             "li",
-            "flex items-center justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
+            "hover-lift flex items-center justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
           );
           var body = el("div", "min-w-0");
           body.appendChild(

@@ -26,15 +26,26 @@
 .call-orb--listening { animation: call-pulse 1.6s ease-out infinite; }
 .call-orb--speaking { animation: call-pulse 1.1s ease-out infinite; }
 
+/* Before the call starts the orb is the only thing on the stage, so it breathes
+   slowly instead of sitting there dead. Slower than the listening pulse so the
+   two states are distinguishable at a glance. */
+.call-orb--idle { animation: call-breathe 4.5s ease-in-out infinite; }
+
 @keyframes call-pulse {
   0%   { box-shadow: 0 0 0 0 rgba(91, 143, 122, 0.45); }
   70%  { box-shadow: 0 0 0 18px rgba(91, 143, 122, 0); }
   100% { box-shadow: 0 0 0 0 rgba(91, 143, 122, 0); }
 }
 
+@keyframes call-breathe {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(91, 143, 122, 0.22); }
+  50%      { transform: scale(1.025); box-shadow: 0 0 0 12px rgba(91, 143, 122, 0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .call-orb--listening,
-  .call-orb--speaking { animation: none; }
+  .call-orb--speaking,
+  .call-orb--idle { animation: none; }
 }
 
 .call-title {

@@ -271,6 +271,9 @@
     callStatus.textContent = text || "";
     callOrb.classList.remove("call-orb--listening", "call-orb--speaking");
     if (orbState) callOrb.classList.add("call-orb--" + orbState);
+    // No explicit state means the call is not live: let the orb breathe rather
+    // than freeze, so an idle stage still looks alive.
+    callOrb.classList.toggle("call-orb--idle", !orbState);
   }
 
   function renderVoiceBanner() {

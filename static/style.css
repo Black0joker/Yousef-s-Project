@@ -339,11 +339,32 @@ body.lang-ar { line-height: 1.75; }
   to   { opacity: 1; transform: translateY(0); }
 }
 
+/* Bubbles enter from their own side, so the direction of the message reads
+   before the text does. Transforms are physical, not logical, so the RTL
+   overrides further down flip the axis rather than the class name. */
+@keyframes bubble-in-start {
+  from { opacity: 0; transform: translate3d(-10px, 6px, 0) scale(0.985); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes bubble-in-end {
+  from { opacity: 0; transform: translate3d(10px, 6px, 0) scale(0.985); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
 .anim-rise { animation: rise-in var(--dur-base) var(--ease-standard) both; }
 .anim-slide-down { animation: slide-down var(--dur-base) var(--ease-standard) both; }
 .anim-fade { animation: fade-in var(--dur-fast) ease-out both; }
 .anim-pop { animation: pop-in var(--dur-base) var(--ease-pop) both; }
 .page-enter { animation: fade-in var(--dur-slow) var(--ease-standard) both; }
+
+/* Chat rows: assistant slides in from the inline start, user from the end.
+   Both only animate transform/opacity, so a long thread stays cheap. */
+.anim-bubble-in { animation: bubble-in-start var(--dur-base) var(--ease-pop) both; }
+.chat-row--user.anim-bubble-in { animation-name: bubble-in-end; }
+
+[dir="rtl"] .anim-bubble-in { animation-name: bubble-in-end; }
+[dir="rtl"] .chat-row--user.anim-bubble-in { animation-name: bubble-in-start; }
 
 /* Press feedback that also fires on touch, where hover never happens. */
 .tap-style { transition: transform var(--dur-fast) var(--ease-standard); }
@@ -363,6 +384,152 @@ body.lang-ar { line-height: 1.75; }
   opacity: 0;
   transform: translateY(-4px);
   transition: opacity var(--dur-base) ease, transform var(--dur-base) ease;
+}
+
+/* --- interactive surfaces ----------------------------------------------- */
+
+/* Cards and list rows lift by a single pixel on hover. One pixel is enough to
+   read as "this is a control"; anything larger starts to feel jumpy when the
+   pointer crosses a list. Pointer-only: on touch a lift sticks after the tap. */
+@media (hover: hover) {
+  .hover-lift {
+    transition: transform var(--dur-fast) var(--ease-standard),
+      box-shadow var(--dur-fast) var(--ease-standard),
+      border-color var(--dur-fast) var(--ease-standard);
+  }
+
+  .hover-lift:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px -8px rgba(15, 61, 51, 0.28), 0 1px 2px rgba(15, 61, 51, 0.05);
+    border-color: rgba(185, 237, 224, 0.9);
+  }
+
+  .dark .hover-lift:hover {
+    box-shadow: 0 6px 18px -8px rgba(0, 0, 0, 0.55);
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+}
+
+/* The app bar separates from the thread once the thread has scrolled under it.
+   A shadow alone reads as a seam; pairing it with a border keeps the edge
+   crisp in dark mode, where a shadow is nearly invisible. */
+.app-header {
+  transition: box-shadow var(--dur-base) var(--ease-standard),
+    border-color var(--dur-base) var(--ease-standard);
+}
+
+.app-header.is-scrolled {
+  box-shadow: 0 6px 16px -14px rgba(15, 61, 51, 0.45);
+  border-color: rgba(227, 226, 223, 1);
+}
+
+.dark .app-header.is-scrolled {
+  box-shadow: 0 8px 20px -16px rgba(0, 0, 0, 0.9);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* --- consent toggle ----------------------------------------------------- */
+
+/* A sliding knob rather than an On/Off word swap: the motion is what says the
+   state changed, so it reads at a glance without re-reading the label.
+   `aria-checked` lives on the button (role="switch"), so the state selectors
+   key off the ancestor rather than the knob's own wrapper. */
+.switch {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  width: 2.75rem;
+  height: 1.5rem;
+  padding: 2px;
+  border-radius: 9999px;
+  border: 1px solid #e3e2df;
+  background: #f5f4f0;
+  transition: background-color var(--dur-fast) ease, border-color var(--dur-fast) ease;
+}
+
+.switch-knob {
+  display: block;
+  width: 1.125rem;
+  height: 1.125rem;
+  border-radius: 9999px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 61, 51, 0.25);
+  transform: translateX(0);
+  transition: transform var(--dur-base) var(--ease-pop), background-color var(--dur-fast) ease;
+}
+
+[aria-checked="true"] > .switch,
+[aria-checked="true"] .switch {
+  background: #0f3d33;
+  border-color: #0f3d33;
+}
+
+[aria-checked="true"] .switch-knob {
+  transform: translateX(1.25rem);
+  background: #eef5f1;
+}
+
+.switch:focus-visible,
+button[role="switch"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 102, 91, 0.3);
+}
+
+.dark .switch { background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.12); }
+.dark .switch-knob { background: #dbe5e0; }
+.dark [aria-checked="true"] .switch { background: #9ed1c4; border-color: #9ed1c4; }
+.dark [aria-checked="true"] .switch-knob { background: #00261e; }
+
+[dir="rtl"] [aria-checked="true"] .switch-knob { transform: translateX(-1.25rem); }
+
+/* --- empty states ------------------------------------------------------- */
+
+/* Empty states drift up rather than appearing, so the page does not look like
+   it finished loading and then stopped. */
+@keyframes empty-float {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.empty-float { animation: empty-float var(--dur-slow) var(--ease-standard) both; }
+
+/* --- auth brand panel --------------------------------------------------- */
+
+/* The blobs behind the auth brand panel drift very slowly, so the panel reads
+   as lit rather than painted. Long durations keep it out of the corner of the
+   eye; anything faster competes with the form beside it. */
+@keyframes blob-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50%      { transform: translate3d(-14px, 18px, 0) scale(1.06); }
+}
+
+.brand-blob { animation: blob-drift 18s ease-in-out infinite; }
+.brand-blob--slow { animation-duration: 26s; animation-direction: reverse; }
+
+/* --- busy status -------------------------------------------------------- */
+
+/* A sweeping highlight instead of a pulsing dot: it reads as "work in
+   progress" without a second blinking element competing with the caret. */
+@keyframes status-sweep {
+  from { background-position: 200% 0; }
+  to   { background-position: -60% 0; }
+}
+
+.is-thinking {
+  background-image: linear-gradient(
+    90deg,
+    currentColor 0%,
+    currentColor 40%,
+    rgba(91, 143, 122, 0.45) 50%,
+    currentColor 60%,
+    currentColor 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: status-sweep 1.8s linear infinite;
 }
 
 /* --- page backdrop ------------------------------------------------------ */
@@ -619,12 +786,16 @@ body {
   .anim-slide-down,
   .anim-fade,
   .anim-pop,
+  .anim-bubble-in,
   .page-enter,
+  .empty-float,
+  .brand-blob,
   .stagger-list > li,
   .skeleton-line,
   .modal-backdrop,
   .modal-card,
   .typing i,
+  .is-thinking,
   .is-streaming::after { animation: none !important; }
 
   /* No custom delays left behind by the stagger rules. */
@@ -634,5 +805,16 @@ body {
   #messages { scroll-behavior: auto !important; }
 
   .tap-style,
-  .chat-jump { transition: none !important; }
+  .chat-jump,
+  .hover-lift,
+  .app-header,
+  .switch,
+  .switch-knob { transition: none !important; }
+
+  /* Without the sweep the gradient would leave the text invisible. */
+  .is-thinking {
+    background-image: none;
+    color: inherit;
+    -webkit-text-fill-color: currentColor;
+  }
 }

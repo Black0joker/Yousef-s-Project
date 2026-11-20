@@ -147,7 +147,7 @@
   function row(mainText, subText, onDelete) {
     var item = el(
       "li",
-      "flex items-start justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
+      "hover-lift flex items-start justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
     );
     var body = el("div", "min-w-0");
     body.appendChild(el("p", "break-words text-sm text-brand-900 dark:text-sand-100", mainText));
@@ -251,6 +251,13 @@
       !(data.relationships || []).length;
     emptyEl.classList.toggle("hidden", !empty);
     contentEl.classList.toggle("hidden", empty);
+    // Re-trigger the drift each time the empty state appears, so it reads as a
+    // state change rather than a static paragraph.
+    if (empty) {
+      emptyEl.classList.remove("empty-float");
+      void emptyEl.offsetWidth;
+      emptyEl.classList.add("empty-float");
+    }
   }
 
   function renderConsents(consents) {
@@ -259,20 +266,33 @@
       var entry = consents[kind];
       var item = el(
         "li",
-        "flex items-center justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
+        "hover-lift flex items-center justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
       );
       var label = el("span", "text-sm text-brand-900 dark:text-sand-100", str()[CONSENT_LABELS[kind]] || kind);
       item.appendChild(label);
 
-      var button = el(
-        "button",
-        "rounded-lg px-3 py-2 text-xs font-semibold transition-colors sm:px-2.5 sm:py-1 " +
-          (entry.granted
-            ? "bg-brand-100 text-brand-800 hover:bg-brand-200 dark:bg-brand-900/60 dark:text-brand-100 dark:hover:bg-brand-800"
-            : "bg-sand-100 text-brand-600 hover:bg-sand-200 dark:bg-white/5 dark:text-sand-300 dark:hover:bg-white/10"),
-        entry.granted ? str().on : str().off
-      );
+      // A sliding knob plus the On/Off word. The motion carries the state
+      // change at a glance, while the text keeps the contract that a toggle
+      // reads its state in words, not colour alone.
+      var button = el("button", "flex shrink-0 items-center gap-2");
       button.type = "button";
+      button.setAttribute("role", "switch");
+      button.setAttribute("aria-checked", entry.granted ? "true" : "false");
+      button.setAttribute("aria-label", str()[CONSENT_LABELS[kind]] || kind);
+      var knob = el("span", "switch");
+      knob.appendChild(el("span", "switch-knob"));
+      button.appendChild(knob);
+      button.appendChild(
+        el(
+          "span",
+          "text-xs font-semibold " +
+            (entry.granted
+              ? "text-brand-800 dark:text-brand-100"
+              : "text-brand-500 dark:text-sand-400"),
+          entry.granted ? str().on : str().off
+        )
+      );
+
       button.addEventListener("click", function () {
         clearMessages();
         Session.authFetch("/api/consents/" + encodeURIComponent(kind), {

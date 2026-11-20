@@ -150,6 +150,7 @@
   var clearBtn = document.getElementById("clear");
   var statusEl = document.getElementById("status");
   var statusDot = document.getElementById("status-dot");
+  var appHeader = document.querySelector(".app-header");
   var logoutBtn = document.getElementById("logout");
   var logoutLabel = document.getElementById("logout-label") || logoutBtn;
   var clearLabel = document.getElementById("clear-label");
@@ -297,12 +298,21 @@
   }
 
   function syncJump() {
-    if (!jumpBtn) return;
-    var distance = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
-    var show = distance > 160;
-    jumpBtn.classList.toggle("is-visible", show);
-    jumpBtn.setAttribute("aria-hidden", show ? "false" : "true");
-    jumpBtn.tabIndex = show ? 0 : -1;
+    if (jumpBtn) {
+      var distance = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+      var show = distance > 160;
+      jumpBtn.classList.toggle("is-visible", show);
+      jumpBtn.setAttribute("aria-hidden", show ? "false" : "true");
+      jumpBtn.tabIndex = show ? 0 : -1;
+    }
+    syncHeader();
+  }
+
+  // The app bar gains a seam once the thread has scrolled beneath it, so the
+  // header and the content never blur into one surface.
+  function syncHeader() {
+    if (!appHeader) return;
+    appHeader.classList.toggle("is-scrolled", messagesEl.scrollTop > 4);
   }
 
   function showSuggestions(show) {
@@ -345,7 +355,7 @@
   function addUserMessage(text, id, withReply, animate) {
     var row = el(
       "div",
-      "chat-row chat-row--user group" + (animate === false ? "" : " animate-fade-in")
+      "chat-row chat-row--user group" + (animate === false ? "" : " anim-bubble-in")
     );
     row.setAttribute("data-msg-id", id);
 
@@ -372,7 +382,7 @@
   }
 
   function createAssistantMessage(id, animate) {
-    var row = el("div", "chat-row group" + (animate === false ? "" : " animate-fade-in"));
+    var row = el("div", "chat-row group" + (animate === false ? "" : " anim-bubble-in"));
     row.setAttribute("data-msg-id", id);
 
     var avatar = el("div", "chat-avatar");
@@ -443,6 +453,8 @@
       stopBtn.title = str().stop;
     }
     statusEl.textContent = busy ? str().thinking : "";
+    // The sweep animation replaces the pulsing dot while a reply is pending.
+    statusEl.classList.toggle("is-thinking", busy);
     statusDot.style.display = busy ? "inline-block" : "none";
     // Refocus only where a keyboard is already present; on a phone this would
     // pop the keyboard open every time a reply finishes.
