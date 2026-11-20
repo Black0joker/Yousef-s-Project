@@ -166,24 +166,31 @@ def invite(
     token = memory._current_user.set(key)
     try:
         with memory._db(connection) as db:
-            memory._execute(
-                db,
-                """
-                INSERT INTO trusted_contacts
-                    (id, owner_id, email, can_see_location, can_see_last_seen,
-                     status, created_at)
-                VALUES (?, ?, ?, ?, ?, 'pending', ?)
-                """,
-                (
-                    contact_id,
-                    key,
-                    address,
-                    int(see_location),
-                    int(see_last_seen),
-                    created_at,
-                ),
-                operation="trusted.invite",
-            )
+            try:
+                memory._execute(
+                    db,
+                    """
+                    INSERT INTO trusted_contacts
+                        (id, owner_id, email, can_see_location, can_see_last_seen,
+                         status, created_at)
+                    VALUES (?, ?, ?, ?, ?, 'pending', ?)
+                    """,
+                    (
+                        contact_id,
+                        key,
+                        address,
+                        int(see_location),
+                        int(see_last_seen),
+                        created_at,
+                    ),
+                    operation="trusted.invite",
+                )
+            except sqlite3.IntegrityError as exc:
+                # (owner_id, email) is unique: the same address cannot be invited
+                # twice. Surface it as a validation error, not a server fault.
+                raise memory.MemoryError(
+                    "That email is already in your trusted list."
+                ) from exc
             db.commit()
             row = memory._execute(
                 db,

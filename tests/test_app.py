@@ -615,6 +615,64 @@ class TestMemoryTools(AppTestCase):
         self.assertEqual(row["predicate"], "age")
         self.assertEqual(json.loads(row["value"]), 20)
 
+    def test_stream_tools_work_when_the_context_is_not_preserved(self):
+        """Regression: the tool handlers must not hold the request connection.
+
+        Flask tears the app context down when the response starts, and the
+        teardown handler closes the per-request SQLite connection with it. A
+        streamed generator therefore runs with a closed connection unless the
+        handlers resolve a live one per call. Disabling context preservation
+        reproduces the ordering that broke in production.
+        """
+        class ToolClient:
+            def run_tools_events(self, messages=None, **params):
+                handlers = params["handlers"]
+                yield {"type": "tool_start", "name": "save_memory", "id": "call_1"}
+                handlers["save_memory"](
+                    entities=[{"name": "Sara", "entity_type": "Person"}],
+                    facts=[{"entity": "Sara", "predicate": "age", "value": 20}],
+                )
+                yield {"type": "tool_end", "name": "save_memory", "id": "call_1", "ok": True}
+                yield {"type": "delta", "content": "Saved."}
+                yield {"type": "done", "finish_reason": "stop", "usage": None, "tool_calls": []}
+
+        me = self.http.get("/api/auth/me", headers=self.headers).get_json()["user"]
+        patcher = patch.object(app_module, "stream_with_context", lambda gen: gen)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        with patch.object(app_module, "get_client", lambda: ToolClient()):
+            response = self.http.post(
+                "/api/chat/stream",
+                json={"messages": [{"role": "user", "content": "My sister Sara is 20."}]},
+                headers=self.headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        frames = parse_sse(response.get_data(as_text=True))
+        self.assertIn(
+            {"tool": {"name": "save_memory", "status": "end", "ok": True}}, frames
+        )
+        stored = memory.query_memory(me["id"], entity="Sara")
+        self.assertEqual([fact["predicate"] for fact in stored["facts"]], ["age"])
+
+    def test_memory_tool_handlers_resolve_the_connection_per_call(self):
+        """A toolset built inside one request is usable after that request ends."""
+        from flask import g
+
+        me = self.http.get("/api/auth/me", headers=self.headers).get_json()["user"]
+        with app_module.app.test_request_context():
+            g.user = {"id": me["id"], "full_name": "Youssef Smith"}
+            _, handlers = app_module.memory_toolset()
+            auth.get_db().close()  # what app teardown does when the response starts
+        with app_module.app.app_context():
+            handlers["save_memory"](
+                entities=[{"name": "Sara", "entity_type": "Person"}],
+                facts=[{"entity": "Sara", "predicate": "age", "value": 20}],
+            )
+
+        stored = memory.query_memory(me["id"], entity="Sara")
+        self.assertEqual([fact["predicate"] for fact in stored["facts"]], ["age"])
+
     def test_tool_logs_do_not_include_arguments_or_results(self):
         def save_memory(**kwargs):
             return {"saved": "TOP_SECRET_RESULT"}
@@ -1228,6 +1286,21 @@ class TestMemoryControlApi(AppTestCase):
         body = self.http.get("/api/memory", headers=self.headers).get_json()
         self.assertEqual(body, {"entities": [], "relationships": [], "facts": []})
 
+    def test_list_accepts_and_applies_an_integer_limit(self):
+        # Query parameters arrive as strings; the route must parse them before
+        # the limit validator sees them, and the cap must actually apply.
+        self.seed()
+        response = self.http.get("/api/memory?limit=1", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(len(body["entities"]), 1)
+        self.assertEqual(len(body["facts"]), 1)
+
+    def test_list_rejects_a_non_numeric_limit(self):
+        response = self.http.get("/api/memory?limit=lots", headers=self.headers)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"]["code"], "invalid_request")
+
     def test_delete_fact(self):
         self.seed()
         fact = self.http.get("/api/memory", headers=self.headers).get_json()["facts"][0]
@@ -1676,6 +1749,13 @@ class TestTrustedApi(AppTestCase):
         unknown = self.invite(self.headers, "nobody@example.com")
         self.assertEqual(known.status_code, unknown.status_code)
         self.assertEqual(known.get_json()["status"], unknown.get_json()["status"])
+
+    def test_duplicate_invite_is_a_validation_error(self):
+        # Tapping "Send invitation" twice must not look like a server fault.
+        self.assertEqual(self.invite(self.headers, "friend@example.com").status_code, 201)
+        response = self.invite(self.headers, "friend@example.com")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"]["code"], "invalid_request")
 
     def test_cannot_invite_yourself(self):
         response = self.invite(self.headers, CREDENTIALS["email"])

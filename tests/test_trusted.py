@@ -13,7 +13,6 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -119,9 +118,10 @@ class TrustedTestCase(unittest.TestCase):
 
     def test_duplicate_invite_is_rejected(self):
         trusted.invite(self.owner, "viewer@example.com", connection=self.conn)
-        with patch.object(memory.logger, "exception"):
-            with self.assertRaises(Exception):
-                trusted.invite(self.owner, "viewer@example.com", connection=self.conn)
+        # A duplicate is a validation problem the client can act on, not a
+        # server fault: the API answers 400 for it.
+        with self.assertRaises(memory.MemoryError):
+            trusted.invite(self.owner, "viewer@example.com", connection=self.conn)
 
     def test_invalid_email_is_rejected(self):
         for value in (None, "", "not-an-email", 42):

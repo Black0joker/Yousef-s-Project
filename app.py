@@ -263,7 +263,15 @@ def log_tool_handlers(handlers: Dict[str, Any], user_id: Any = None) -> Dict[str
 
 
 def memory_toolset():
-    """Memory tool schemas/handlers bound to the authenticated user."""
+    """Memory tool schemas/handlers bound to the authenticated user.
+
+    The handlers are built inside the request so they can read the caller's
+    identity, but they must not capture the request-scoped connection: a
+    streamed reply outlives the app context that owns it, and the teardown
+    handler closes that connection as soon as the response starts. Building the
+    toolset without a connection makes ``memory._db()`` resolve a live one per
+    call (the request's when there is one, its own otherwise).
+    """
     claims = auth.current_user() or {}
     user_id = claims.get("id")
     if user_id is None:
@@ -277,20 +285,23 @@ def memory_toolset():
 
     tools, handlers = memory.toolset(
         user_id,
-        connection=auth.get_db(),
         display_name=display_name,
     )
     return tools, log_tool_handlers(handlers, user_id=user_id)
 
 
 def schedule_toolset():
-    """Schedule tool schemas/handlers bound to the authenticated user."""
+    """Schedule tool schemas/handlers bound to the authenticated user.
+
+    Same rule as :func:`memory_toolset`: no captured connection, because these
+    handlers run inside the streamed generator.
+    """
     claims = auth.current_user() or {}
     user_id = claims.get("id")
     if user_id is None:
         raise auth.AuthError("unauthorized", "Authentication required.", 401)
 
-    tools, handlers = schedule.toolset(user_id, connection=auth.get_db())
+    tools, handlers = schedule.toolset(user_id)
     return tools, log_tool_handlers(handlers, user_id=user_id)
 
 
@@ -534,6 +545,20 @@ def _query_float(value: Any) -> Any:
         return value
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _query_int(value: Any) -> Any:
+    """Parse an integer query-string value; leave anything else for validation.
+
+    Same reason as :func:`_query_float`: ``?limit=5`` arrives as ``"5"``, which
+    memory's limit validator would otherwise reject as a non-integer.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        return int(value.strip())
     except (TypeError, ValueError):
         return value
 
@@ -1153,11 +1178,14 @@ def api_voice_speak():
 def api_memory_list():
     """Everything the caller has stored, newest-first per store."""
     claims = auth.current_user() or {}
-    data = memory.query_memory(
-        claims.get("id"),
-        include_expired=request.args.get("include_expired", "").lower() in ("1", "true", "yes"),
-        limit=request.args.get("limit"),
-    )
+    try:
+        data = memory.query_memory(
+            claims.get("id"),
+            include_expired=request.args.get("include_expired", "").lower() in ("1", "true", "yes"),
+            limit=_query_int(request.args.get("limit")),
+        )
+    except memory.MemoryError as exc:
+        return jsonify({"error": {"code": "invalid_request", "message": str(exc)}}), 400
     return jsonify(data)
 
 

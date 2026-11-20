@@ -104,6 +104,17 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   `display_name`, falling back to the DB for older tokens). It must never read a
   user id or name supplied by the model, and `tests/test_memory.py` asserts a
   model-supplied `user_id` is ignored.
+- **Never bind a tool handler to the request's connection.** `memory_toolset()`
+  and `schedule_toolset()` pass `connection=None` on purpose: the handlers run
+  inside the streamed generator, Flask tears the app context down when the
+  response *starts*, and `auth.close_db` closes that per-request connection with
+  it. A captured connection then fails with `ProgrammingError: Cannot operate
+  on a closed database` on the first tool call. `memory._db(None)` resolves a
+  live connection per call instead (the request's while one exists, its own
+  otherwise), which is also why non-streaming chat is unaffected. The test
+  client cannot catch a regression here because it consumes the body inside the
+  app call, so `tests/test_app.py::TestMemoryTools` disables context
+  preservation to reproduce the real ordering.
 - Memory query results always include `created_at` for every entity,
   relationship, and fact; facts also include `observed_at` and `valid_until`.
   Keep those date fields when changing the row serializers.
@@ -190,7 +201,8 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   `schedule.SCHEMA_SQL`, not `memory.py`.
 - `agent_toolset()` in `app.py` merges the memory and schedule tools and raises
   on a duplicate tool name. Add a new tool group there, not by hand in each
-  chat route; both routes call `agent_toolset()`.
+  chat route; both routes call `agent_toolset()`. Keep every group
+  connection-free — see the tool-handler rule in the Memory section.
 - **Every timestamp is stored UTC** and normalized through
   `memory._timestamp()`. The client renders local time. `today_appointments()`
   takes `tz_offset` in minutes **east** of UTC (what `-getTimezoneOffset()`
