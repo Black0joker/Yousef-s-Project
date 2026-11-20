@@ -34,6 +34,9 @@ handling.
 │   ├── auth.js            # login/register form handling
 │   ├── chat.js            # streams replies, keeps history per user
 │   └── call.js            # mic input, call stream, full-reply TTS
+├── docs/
+│   ├── DESIGN.md          # design system, components, screens, React Native handoff
+│   └── API.md             # every HTTP endpoint, payload, error, TypeScript client
 ├── prompts/
 │   ├── english.md         # SAGE system prompt (English)
 │   ├── arabic.md          # SAGE system prompt (Arabic)
@@ -57,6 +60,13 @@ handling.
 ├── .gitignore
 └── README.md
 ```
+
+Two references for building another client (for example a React Native app):
+
+- [`docs/DESIGN.md`](docs/DESIGN.md) — design tokens, components, every screen, and the
+  native porting notes.
+- [`docs/API.md`](docs/API.md) — all 55 routes with payloads, SSE frames, error codes, and
+  TypeScript examples.
 
 ## Requirements
 
