@@ -445,9 +445,10 @@ only for the explicit jump — never animate every token.
 - Buttons appear progressively: `Start call` → `Hang up` + `Mute` once the call is live.
 - Transcript bubbles mirror the chat bubbles (assistant tinted, user filled) with a
   small uppercase speaker label; a pending (not yet spoken) bubble is 65% opacity.
-- The voice banner explains *why* voice is off: not configured, token expired, mic
-  denied, no mic, unsupported language, network loss, or a browser that blocks the
-  speech service. Callers can always type.
+- The voice banner explains *why* voice is off: not configured, **credits used up**
+  (`reason: "voice_quota_exceeded"` — the token is fine, the ElevenLabs account is out of
+  credits), token expired, mic denied, no mic, unsupported language, network loss, or a
+  browser that blocks the speech service. Callers can always type.
 
 ### 4.10 Motion
 

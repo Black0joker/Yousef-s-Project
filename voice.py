@@ -53,6 +53,17 @@ _TOKEN_LOCK = threading.Lock()
 _cached_access_token: Optional[str] = None
 _cached_access_expiry: float = 0.0
 
+#: Where the last access token came from: "manual", "cache", "refresh", "missing".
+#: Non-secret, and the only way to tell from the outside whether a stale
+#: ELEVENLABS_TOKEN is shadowing a perfectly good refresh token.
+_token_source: str = "missing"
+
+#: ElevenLabs answers *401* when the account is out of credits, so a rejected
+#: request does not necessarily mean a bad token. Once a quota rejection is seen
+#: the status endpoint reports it until a request succeeds again, so the call
+#: page can warn before the user starts talking.
+_quota_exhausted: bool = False
+
 #: Friendly names used by the call UI. Override the default with
 #: ELEVENLABS_VOICE_ID (and ELEVENLABS_VOICE_ID_AR for Arabic).
 DEFAULT_VOICES: Dict[str, str] = {
@@ -265,17 +276,20 @@ def _refresh_access_token() -> str:
     except (TypeError, ValueError):
         seconds = 3600.0
 
-    global _cached_access_token, _cached_access_expiry
+    global _cached_access_token, _cached_access_expiry, _token_source
     _cached_access_token = token
     _cached_access_expiry = time.time() + max(60.0, seconds)
+    _token_source = "refresh"
     return token
 
 
 def _access_token() -> str:
     """Return a valid access token, refreshing it through Firebase if needed."""
+    global _token_source
     manual = _token()
     if manual:
         if not _token_expired(manual):
+            _token_source = "manual"
             return manual
         if not _refresh_token():
             raise VoiceError(
@@ -286,6 +300,7 @@ def _access_token() -> str:
 
     with _TOKEN_LOCK:
         if _cached_access_token and _cached_access_expiry > time.time() + REFRESH_SKEW_SECONDS:
+            _token_source = "cache"
             return _cached_access_token
 
     return _refresh_access_token()
@@ -429,6 +444,17 @@ def status() -> Dict[str, Any]:
                 "reason": exc.code,
             }
 
+    if _quota_exhausted:
+        # The token is fine; the account has no credits left. Say that instead
+        # of "expired", which sends people to the wrong problem.
+        state = {
+            "configured": state.get("configured", True),
+            "available": False,
+            "expired": False,
+            "expires_at": state.get("expires_at"),
+            "reason": "voice_quota_exceeded",
+        }
+
     return {
         "configured": state["configured"],
         "available": state["available"],
@@ -436,6 +462,11 @@ def status() -> Dict[str, Any]:
         "expires_at": state["expires_at"],
         "reason": state["reason"],
         "refresh_configured": refresh_configured,
+        # Diagnostics: a configured-but-stale ELEVENLABS_TOKEN wins over a
+        # working refresh token (see _access_token), so the UI reports which one
+        # is actually in play instead of making the failure a guessing game.
+        "token_source": _token_source,
+        "manual_token": bool(_token()),
         "voices": voice_names(),
         "default_voice": default_voice_name(),
         "model": MODEL,
@@ -525,7 +556,33 @@ def _response_detail(response: requests.Response) -> str:
     return text[:300]
 
 
+_EMAIL_IN_TEXT = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+
+
+def _sanitize_detail(text: str, limit: int = 120) -> str:
+    """Provider error text, collapsed and stripped of anything that looks personal."""
+    cleaned = " ".join(str(text or "").split())
+    cleaned = _EMAIL_IN_TEXT.sub("<email>", cleaned)
+    return cleaned[:limit]
+
+
+def _detail_message(response: requests.Response, limit: int = 240) -> str:
+    """The provider's own ``detail.message``, when it sends one."""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    detail = body.get("detail") if isinstance(body, dict) else None
+    if not isinstance(detail, dict):
+        return ""
+    message = detail.get("message")
+    if not isinstance(message, str):
+        return ""
+    return _sanitize_detail(message, limit)
+
+
 def _post(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> requests.Response:
+    global _quota_exhausted
     last_error: Optional[Exception] = None
     for attempt in range(1, ATTEMPTS + 1):
         try:
@@ -548,13 +605,39 @@ def _post(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> request
             ) from None
 
         if response.status_code in (200, 201):
+            _quota_exhausted = False
             return response
 
         status_code = response.status_code
         if status_code in (401, 403):
             detail = _response_detail(response)
+            provider_message = _detail_message(response)
             response.close()
+            # Without this line a rejected token is indistinguishable from an
+            # expired one, and a stale ELEVENLABS_TOKEN shadowing a working
+            # refresh token is invisible in production.
+            logger.warning(
+                "voice.upstream.rejected",
+                extra={
+                    "event": "voice.upstream.rejected",
+                    "status": status_code,
+                    "token_source": _token_source,
+                    "detail": _sanitize_detail(detail),
+                },
+            )
             lowered = detail.lower()
+            if "quota_exceeded" in lowered or "exceeds your quota" in lowered:
+                # 401 with a quota body: the token is fine and the account is
+                # out of credits. Saying "token expired" here sends people
+                # hunting for a token problem that does not exist.
+                _quota_exhausted = True
+                hint = provider_message or _sanitize_detail(detail)
+                raise VoiceError(
+                    "voice_quota_exceeded",
+                    "ElevenLabs credits are used up for this account."
+                    + (f" {hint}" if hint else ""),
+                    503,
+                )
             if "unusual activity" in lowered or "free tier" in lowered:
                 raise VoiceError(
                     "voice_account_restricted",
@@ -623,8 +706,10 @@ def synthesize(
             try:
                 response = _post(url, headers, payload)
             except VoiceError as exc:
-                # The cached access token can expire between refreshes; mint a
-                # new one once and retry the same chunk.
+                # The token can expire between refreshes, and a manual
+                # ELEVENLABS_TOKEN that still looks valid can be one ElevenLabs
+                # has already rejected. Force a real refresh rather than asking
+                # _access_token() again, which would hand back the same token.
                 if (
                     exc.code == "voice_token_expired"
                     and _refresh_token()
@@ -632,7 +717,7 @@ def synthesize(
                 ):
                     refreshed = True
                     _forget_cached_token()
-                    headers["authorization"] = f"Bearer {_access_token()}"
+                    headers["authorization"] = f"Bearer {_refresh_access_token()}"
                     response = _post(url, headers, payload)
                 else:
                     raise

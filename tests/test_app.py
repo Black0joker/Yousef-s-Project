@@ -905,7 +905,26 @@ class TestVoiceApi(AppTestCase):
         body = response.get_json()
         self.assertIn("available", body)
         self.assertIn("voices", body)
-        self.assertNotIn("token", json.dumps(body).lower())
+        # No credential material: the payload is exactly this key set, and
+        # nothing in it looks like a JWT.
+        self.assertEqual(
+            set(body),
+            {
+                "configured",
+                "available",
+                "expired",
+                "expires_at",
+                "reason",
+                "refresh_configured",
+                "token_source",
+                "manual_token",
+                "voices",
+                "default_voice",
+                "model",
+            },
+        )
+        self.assertNotIn("eyJ", json.dumps(body))
+        self.assertIn(body["token_source"], {"missing", "manual", "cache", "refresh"})
 
     def test_speak_requires_auth(self):
         response = self.http.post("/api/voice/speak", json={"text": "hi"})

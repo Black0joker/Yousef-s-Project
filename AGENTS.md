@@ -381,6 +381,15 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   returns that error: it is an account restriction, so compare Firebase
   `sign_in_provider` between the working browser token and the refresh token
   (capture the refresh token from the same provider). README has the diagnosis.
+- **A `401` from ElevenLabs does not necessarily mean a bad token.** It also
+  answers `401` with `detail.code = "quota_exceeded"` when the account is out of
+  credits. That maps to `voice_quota_exceeded` (with the provider's own message
+  appended) and sets the module flag `_quota_exhausted`, which makes
+  `/api/voice/status` report `available: false` with `reason
+  "voice_quota_exceeded"` so `/call` warns before the user speaks; any successful
+  request clears the flag. When a rejected token is logged as
+  `voice.upstream.rejected`, it carries `status`, `token_source` and a sanitized
+  `detail` — read that line before assuming the token is the problem.
 - Voice routes are authenticated (`GET /api/voice/status`,
   `POST /api/voice/speak`); only `/call` is a public shell. Never log voice
   text, tokens, voice ids, or audio. `voice.speak` logs only `text_chars`,

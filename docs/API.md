@@ -677,7 +677,7 @@ refuses, so the flag leaks nothing.
 ```json
 { "configured": true, "available": true, "expired": false,
   "expires_at": "2026-11-20T10:41:07Z", "reason": "refresh",
-  "refresh_configured": true,
+  "refresh_configured": true, "token_source": "refresh", "manual_token": false,
   "voices": ["arabic", "george", "host", "owl"],
   "default_voice": "owl",
   "model": "eleven_v4_exp" }
@@ -685,8 +685,16 @@ refuses, so the flag leaks nothing.
 
 Call `available` before enabling call mode. `reason` explains the state: `refresh`,
 `ok`, `opaque`, `missing`, `expired`, or a voice error code such as
-`voice_token_expired`. `voice_expired` in `reason` means a refreshed token was still
-rejected. No token material is ever returned.
+`voice_token_expired` / `voice_quota_exceeded`. `voice_expired` in `reason` means a
+refreshed token was still rejected.
+
+`token_source` (`manual`, `cache`, `refresh`) and `manual_token` are diagnostics: a
+configured `ELEVENLABS_TOKEN` wins over a working refresh token, so this is how you tell
+which credential is actually in play. No token material is ever returned.
+
+> `reason: "voice_quota_exceeded"` means the **token is fine** and the ElevenLabs account
+> is out of credits. ElevenLabs signals that with a `401`, so do not render it as an
+> expired session. The state clears itself on the next successful request.
 
 ### 9.2 `POST /api/voice/speak`
 
@@ -702,6 +710,8 @@ time (assistant text between tool calls). `language: "ar"` selects the Arabic vo
 | `voice_invalid_request` (missing text, unknown voice) | `400` |
 | `voice_text_too_long` (over 4 000 characters) | `400` |
 | `voice_token_missing` / `voice_token_expired` | `503` |
+| `voice_quota_exceeded` (the account is out of credits; the message carries ElevenLabs' own figures) | `503` |
+| `voice_account_restricted` (free-tier / unusual-activity restriction) | `503` |
 | `voice_upstream_error` | `502` |
 
 Server-side details: segments over the provider's 2 000-character limit are split with

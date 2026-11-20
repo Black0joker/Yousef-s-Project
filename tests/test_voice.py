@@ -78,6 +78,8 @@ class VoiceTestCase(unittest.TestCase):
 
         voice._cached_access_token = None
         voice._cached_access_expiry = 0.0
+        voice._token_source = "missing"
+        voice._quota_exhausted = False
         self.addCleanup(self._restore_globals)
 
     def _restore_globals(self):
@@ -88,6 +90,8 @@ class VoiceTestCase(unittest.TestCase):
                 os.environ[name] = value
         voice._cached_access_token = None
         voice._cached_access_expiry = 0.0
+        voice._token_source = "missing"
+        voice._quota_exhausted = False
 
     def set_env(self, **values):
         old = {key: os.environ.get(key) for key in values}
@@ -212,6 +216,133 @@ class RefreshTests(VoiceTestCase):
 
         self.assertEqual(ctx.exception.code, "voice_token_expired")
         self.assertEqual(post.call_count, 1)
+
+    def test_status_reports_which_token_is_in_play(self):
+        """A manual token wins over a working refresh token; say so out loud."""
+        manual = fake_jwt({"exp": int(time.time()) + 3600})
+        self.set_env(ELEVENLABS_TOKEN=manual, ELEVENLABS_REFRESH_TOKEN="refresh-1")
+        state = voice.status()
+
+        self.assertTrue(state["available"])
+        self.assertEqual(state["token_source"], "manual")
+        self.assertTrue(state["manual_token"])
+        self.assertTrue(state["refresh_configured"])
+
+    def test_status_reports_a_refreshed_token(self):
+        fresh = fake_jwt({"exp": int(time.time()) + 3600})
+        self.set_env(ELEVENLABS_REFRESH_TOKEN="refresh-1", FIREBASE_API_KEY="public-key")
+        firebase = FakeResponse(json_body=self._firebase_body(fresh, refresh="refresh-1"))
+        with patch.object(voice.requests, "post", return_value=firebase):
+            state = voice.status()
+
+        self.assertEqual(state["token_source"], "refresh")
+        self.assertFalse(state["manual_token"])
+
+    def test_a_rejected_manual_token_is_replaced_by_a_refresh(self):
+        """Regression: a stale ELEVENLABS_TOKEN must not survive the retry.
+
+        The manual token looks valid locally (so _access_token() keeps returning
+        it) while ElevenLabs rejects it. The retry has to mint a token from the
+        refresh token instead of asking _access_token() again.
+        """
+        manual = fake_jwt({"exp": int(time.time()) + 3600})
+        fresh = fake_jwt({"exp": int(time.time()) + 3600, "kid": "fresh"})
+        self.set_env(
+            ELEVENLABS_TOKEN=manual,
+            ELEVENLABS_REFRESH_TOKEN="refresh-1",
+            FIREBASE_API_KEY="public-key",
+            ELEVENLABS_BASE_URL="https://example.test",
+        )
+
+        attempts = []
+        accepted = FakeResponse(chunks=[b"mp3-data"])
+
+        def fake_post(url, headers, payload):
+            attempts.append(headers.get("authorization"))
+            if len(attempts) == 1:
+                raise voice.VoiceError(
+                    "voice_token_expired",
+                    "The ElevenLabs web token was rejected or has expired.",
+                    503,
+                )
+            return accepted
+
+        firebase = FakeResponse(json_body=self._firebase_body(fresh, refresh="refresh-1"))
+        with patch.object(voice, "_post", side_effect=fake_post), patch.object(
+            voice.requests, "post", return_value=firebase
+        ) as firebase_call:
+            audio = voice.synthesize("Hello.")
+
+        self.assertEqual(audio, b"mp3-data")
+        self.assertEqual(firebase_call.call_count, 1)
+        self.assertEqual(attempts[0], f"Bearer {manual}")
+        self.assertEqual(attempts[1], f"Bearer {fresh}")
+
+    def test_a_rejected_token_logs_a_sanitized_provider_detail(self):
+        self.set_env(ELEVENLABS_TOKEN="opaque-token")
+        rejected = FakeResponse(
+            status_code=401,
+            json_body={"detail": {"status": "invalid_token", "message": "user a@b.com was logged out"}},
+        )
+        with patch.object(voice.requests, "post", return_value=rejected):
+            with self.assertLogs("voice", level="WARNING") as captured:
+                with self.assertRaises(voice.VoiceError):
+                    voice.synthesize("Hello.")
+
+        record = next(
+            item
+            for item in captured.records
+            if getattr(item, "event", None) == "voice.upstream.rejected"
+        )
+        self.assertEqual(getattr(record, "status", None), 401)
+        self.assertEqual(getattr(record, "token_source", None), "manual")
+        detail = getattr(record, "detail", "")
+        self.assertIn("invalid_token", detail)
+        self.assertNotIn("a@b.com", detail)
+        self.assertIn("<email>", detail)
+
+    def test_quota_exceeded_is_not_reported_as_an_expired_token(self):
+        """ElevenLabs answers 401 when the account is out of credits.
+
+        The token is fine, so blaming it sends people to the wrong problem.
+        """
+        self.set_env(ELEVENLABS_REFRESH_TOKEN="refresh-1", FIREBASE_API_KEY="public-key")
+        fresh = fake_jwt({"exp": int(time.time()) + 3600})
+        firebase = FakeResponse(json_body=self._firebase_body(fresh, refresh="refresh-1"))
+        rejected = FakeResponse(
+            status_code=401,
+            json_body={
+                "detail": {
+                    "type": "invalid_request",
+                    "code": "quota_exceeded",
+                    "message": "This request exceeds your quota of 10000. "
+                    "You have 7 credits remaining, while 16 credits are required.",
+                    "status": "quota_exceeded",
+                }
+            },
+        )
+        with patch.object(voice.requests, "post", side_effect=[firebase, rejected, rejected, rejected]):
+            with self.assertRaises(voice.VoiceError) as ctx:
+                voice.synthesize("Hello.")
+
+        self.assertEqual(ctx.exception.code, "voice_quota_exceeded")
+        self.assertEqual(ctx.exception.status, 503)
+        self.assertIn("credits are used up", ctx.exception.message)
+
+        # and the status endpoint reports the real reason, not "expired"
+        state = voice.status()
+        self.assertFalse(state["available"])
+        self.assertFalse(state["expired"])
+        self.assertEqual(state["reason"], "voice_quota_exceeded")
+
+    def test_a_successful_request_clears_the_quota_flag(self):
+        voice._quota_exhausted = True
+        self.addCleanup(setattr, voice, "_quota_exhausted", False)
+        self.set_env(ELEVENLABS_TOKEN=fake_jwt({"exp": int(time.time()) + 3600}))
+        with patch.object(voice.requests, "post", return_value=FakeResponse(chunks=[b"mp3"])):
+            self.assertEqual(voice.synthesize("Hi."), b"mp3")
+
+        self.assertFalse(voice.status()["reason"] == "voice_quota_exceeded")
 
     def test_missing_credentials_report_missing(self):
         with self.assertRaises(voice.VoiceError) as ctx:

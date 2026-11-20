@@ -30,6 +30,7 @@
       sage: "SAGE",
       voiceUnavailable: "Voice is unavailable. Set a fresh ELEVENLABS_TOKEN to hear replies.",
       voiceExpired: "The voice token has expired. Refresh ELEVENLABS_TOKEN to hear replies.",
+      voiceQuota: "ElevenLabs credits are used up for this account, so replies cannot be spoken. Typing still works.",
       micDenied: "Microphone permission was denied. You can still type.",
       micUnavailable: "No microphone was found, or it is in use by another app. You can still type.",
       micLanguage: "Speech recognition does not support this language. You can still type.",
@@ -63,6 +64,7 @@
       sage: "SAGE",
       voiceUnavailable: "الصوت غير متاح. أضف ELEVENLABS_TOKEN جديدًا لسماع الردود.",
       voiceExpired: "انتهت صلاحية رمز الصوت. حدّث ELEVENLABS_TOKEN لسماع الردود.",
+      voiceQuota: "انتهت أرصدة ElevenLabs لهذا الحساب، لذلك لا يمكن نطق الردود. الكتابة ما زالت تعمل.",
       micDenied: "تم رفض إذن الميكروفون. يمكنك الكتابة بدلًا من ذلك.",
       micUnavailable: "لم يتم العثور على ميكروفون أو أنه مستخدم في تطبيق آخر. يمكنك الكتابة.",
       micLanguage: "التعرف على الكلام لا يدعم هذه اللغة. يمكنك الكتابة.",
@@ -239,6 +241,10 @@
   function renderVoiceBanner() {
     if (!voice.configured) {
       voiceBanner.textContent = str().voiceUnavailable;
+      voiceBanner.classList.remove("hidden");
+    } else if (voice.reason === "voice_quota_exceeded") {
+      // The token is fine, the account has no credits left. Say so plainly.
+      voiceBanner.textContent = str().voiceQuota;
       voiceBanner.classList.remove("hidden");
     } else if (voice.expired) {
       voiceBanner.textContent = str().voiceExpired;

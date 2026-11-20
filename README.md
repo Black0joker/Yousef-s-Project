@@ -704,6 +704,16 @@ banner when voice is unavailable. Text chat and typed call turns keep working
 when voice is down. ElevenLabs may also restrict an account (for example after
 unusual-activity detection), which is reported as `voice_account_restricted`.
 
+> **A `401` from ElevenLabs is not always a bad token.** It also answers `401`
+> when the account runs out of credits, with
+> `{"detail":{"code":"quota_exceeded", ...}}`. That is reported as
+> `voice_quota_exceeded` together with ElevenLabs' own message (for example
+> *"You have 7 credits remaining, while 16 credits are required"*), and
+> `/api/voice/status` then reports `reason: "voice_quota_exceeded"` so `/call`
+> shows a banner before anyone speaks. Top up the plan or switch accounts; a
+> successful request clears the state. The old behaviour blamed the token and
+> sent people looking for a token problem that did not exist.
+
 If a token copied from the browser works but the refreshed token gets
 `voice_account_restricted`, compare how the two sessions signed in. The
 refresh token carries a Firebase `sign_in_provider` claim (`google.com`,
