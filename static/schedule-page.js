@@ -131,7 +131,7 @@
   function actionButton(label, onClick, danger) {
     var button = el(
       "button",
-      "shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors " +
+      "shrink-0 rounded-lg px-3 py-2 text-xs font-semibold transition-colors sm:px-2.5 sm:py-1 " +
         (danger
           ? "text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
           : "text-brand-700 hover:bg-brand-50 dark:text-brand-200 dark:hover:bg-brand-900/40"),
@@ -148,7 +148,7 @@
       "flex items-start justify-between gap-3 rounded-xl border border-sand-200 px-3.5 py-2.5 dark:border-white/10"
     );
     var body = el("div", "min-w-0");
-    body.appendChild(el("p", "truncate text-sm text-brand-900 dark:text-sand-100", item.title));
+    body.appendChild(el("p", "break-words text-sm text-brand-900 dark:text-sand-100", item.title));
     var meta = formatWhen(item.starts_at);
     if (item.place) meta += " · " + item.place;
     body.appendChild(el("p", "mt-0.5 text-xs text-brand-500 dark:text-sand-400", meta));
@@ -259,7 +259,7 @@
           );
           var body = el("div", "min-w-0");
           body.appendChild(
-            el("p", "truncate text-sm text-brand-900 dark:text-sand-100", routine.label)
+            el("p", "break-words text-sm text-brand-900 dark:text-sand-100", routine.label)
           );
           body.appendChild(
             el(
@@ -340,7 +340,7 @@
           );
           var body = el("div", "min-w-0");
           body.appendChild(
-            el("p", "truncate text-sm text-brand-900 dark:text-sand-100", place.name)
+            el("p", "break-words text-sm text-brand-900 dark:text-sand-100", place.name)
           );
           body.appendChild(
             el(

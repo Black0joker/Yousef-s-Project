@@ -435,6 +435,23 @@ python -m unittest discover -s tests/integration -v   # live; needs TH_API_KEY
   `sharing: false` contact as "sharing paused" rather than skipping it. The
   "View activity" toggle fetches `/api/trusted/people/<id>`; a `403` means the
   gates closed and must surface as an error, not as an empty card.
+- Responsive app bar: `/chat` keeps the Trusted/Schedule/Memory/Call pills only
+  at `lg+`; below that they move to a second tab row inside the same header
+  (`grid-cols-4`, icon over label on phones, inline pills from `sm`). The links
+  exist twice on purpose — the `lg:flex` copy and the `<nav>` copy — so adding a
+  destination means editing both. Without this the bar overflowed the page
+  horizontally from 320px through 819px. `/call` adds a back arrow on phones and
+  hides the greeting and the `EN`/`AR` code there, because four extra controls do
+  not fit a 320px bar.
+- `static/style.css` owns the shared viewport helpers: `.app-shell` sizes the
+  chat/call column with `100dvh` (falling back to `100vh`), `.composer-footer`
+  adds `env(safe-area-inset-bottom)` so the composer clears the home indicator,
+  and phones get 16px `.field-input`/`#input` text so iOS stops zooming the page
+  on focus. `.btn-secondary` / `.btn-danger` style the `/memory` header buttons;
+  they are not Tailwind utilities, so keep them defined here.
+- List rows (memory, schedule, trusted) wrap long values with `break-words`
+  instead of `truncate`, and their action buttons grow to a 32px tap height
+  below `sm` (`px-3 py-2 sm:px-2.5 sm:py-1`). Keep both rules when adding rows.
 - Browser state keys: `th_token`, `th_expires_at`, `th_user`, `th_theme`, and
   `th_language`. Chat history is **not** in `localStorage` any more; it lives in
   `conversations` and is rendered from `/api/conversations/current`.

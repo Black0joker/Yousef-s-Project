@@ -46,12 +46,16 @@
 </head>
 <body class="h-full bg-sand-50 font-body text-brand-950 antialiased selection:bg-brand-200 selection:text-brand-950 dark:bg-[#0b1512] dark:text-sand-100 dark:selection:bg-brand-700 dark:selection:text-white">
 
-  <div class="mx-auto flex h-screen w-full max-w-[880px] flex-col bg-white shadow-[0_0_60px_-24px_rgba(15,61,51,0.25)] dark:bg-[#141d1b] border-x border-sand-200/80 dark:border-white/5">
+  <div class="app-shell mx-auto flex w-full max-w-[880px] flex-col bg-white shadow-[0_0_60px_-24px_rgba(15,61,51,0.25)] dark:bg-[#141d1b] border-x border-sand-200/80 dark:border-white/5">
 
     <header class="sticky top-0 z-40 w-full border-b border-sand-200/80 bg-white/85 backdrop-blur-md dark:border-white/5 dark:bg-[#141d1b]/85">
-      <div class="flex h-14 items-center justify-between px-4">
-        <div class="flex items-center gap-2.5">
-          <span class="flex h-8 w-8 items-center justify-center rounded-xl bg-brand-900 text-brand-200 shadow-sm shadow-brand-900/20">
+      <div class="flex h-14 items-center justify-between gap-2 px-4">
+        <div class="flex min-w-0 items-center gap-2.5">
+          <a href="/chat" title="Back to chat" aria-label="Back to chat"
+             class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-brand-500 transition-colors hover:bg-sand-100 hover:text-brand-900 dark:text-sand-400 dark:hover:bg-white/5 dark:hover:text-white sm:hidden">
+            <span class="material-symbols-outlined text-[19px]" aria-hidden="true">arrow_back</span>
+          </a>
+          <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-brand-900 text-brand-200 shadow-sm shadow-brand-900/20">
             <span class="material-symbols-outlined text-[19px]" aria-hidden="true">spa</span>
           </span>
           <h1 class="font-display text-[15px] font-extrabold tracking-[0.14em] text-brand-950 dark:text-white">SAGE</h1>
@@ -61,19 +65,20 @@
           </span>
         </div>
 
-        <div class="flex items-center gap-1.5 text-sm">
-          <div class="flex items-center font-medium text-brand-700 dark:text-sand-300">
-            <a href="/chat" class="me-2 hidden text-xs font-normal text-brand-500 underline underline-offset-2 transition-colors hover:text-brand-800 dark:text-brand-300 dark:hover:text-white sm:inline" id="back-to-chat">Chat</a>
-            <span id="greeting" class="max-w-[80px] truncate sm:max-w-none">Hi there</span>
-            <button class="ms-2 cursor-pointer rounded text-xs font-normal text-brand-500 underline underline-offset-2 transition-colors hover:text-brand-800 dark:text-brand-300 dark:hover:text-white" id="logout" type="button">log out</button>
-          </div>
+        <div class="flex shrink-0 items-center gap-1 text-sm sm:gap-1.5">
+          <a href="/chat" class="me-2 hidden text-xs font-normal text-brand-500 underline underline-offset-2 transition-colors hover:text-brand-800 dark:text-brand-300 dark:hover:text-white sm:inline" id="back-to-chat">Chat</a>
+          <span id="greeting" class="hidden max-w-[160px] truncate font-medium text-brand-700 dark:text-sand-300 sm:inline">Hi there</span>
+          <button class="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-xs font-normal text-brand-500 transition-colors hover:bg-sand-100 hover:text-brand-800 focus:outline-none focus:ring-2 focus:ring-brand-600/25 dark:text-brand-300 dark:hover:bg-white/5 dark:hover:text-white sm:ms-2 sm:h-8 sm:w-auto sm:justify-start sm:bg-transparent sm:px-0 sm:underline sm:underline-offset-2 sm:hover:bg-transparent" id="logout" type="button" aria-label="Log out">
+            <span class="material-symbols-outlined text-[17px] sm:hidden" aria-hidden="true">logout</span>
+            <span class="hidden sm:inline" id="logout-label">log out</span>
+          </button>
 
           <div class="mx-1 hidden h-4 w-px bg-sand-200 dark:bg-white/10 sm:block"></div>
 
           <button type="button" data-lang-toggle id="lang-toggle" aria-label="Switch language" title="Language"
                   class="flex h-8 items-center gap-1 rounded-full border border-sand-200 bg-sand-100 px-2.5 text-brand-600 transition-colors hover:bg-sand-200 hover:text-brand-900 focus:outline-none focus:ring-2 focus:ring-brand-600/25 dark:border-white/10 dark:bg-white/5 dark:text-sand-300 dark:hover:bg-white/10 dark:hover:text-white">
             <span class="material-symbols-outlined text-[17px]" aria-hidden="true">language</span>
-            <span id="lang-label" class="text-xs font-semibold">EN</span>
+            <span id="lang-label" class="hidden text-xs font-semibold sm:inline">EN</span>
           </button>
 
           <button type="button" data-theme-toggle aria-label="Switch theme" title="Theme"
@@ -94,7 +99,7 @@
       </div>
     </header>
 
-    <main class="flex flex-1 flex-col overflow-hidden" id="call-main">
+    <main class="flex min-h-0 flex-1 flex-col overflow-hidden" id="call-main">
       <section class="call-stage" id="call-stage">
         <div class="call-orb" id="call-orb" aria-hidden="true">
           <span class="material-symbols-outlined">spa</span>
@@ -125,7 +130,7 @@
       <section class="call-transcript" id="transcript" aria-live="polite" aria-label="Call transcript"></section>
     </main>
 
-    <footer class="sticky bottom-0 z-30 border-t border-sand-200/80 bg-gradient-to-t from-white via-white/95 to-white/80 px-4 pb-3 pt-3 backdrop-blur-md dark:border-white/5 dark:from-[#141d1b] dark:via-[#141d1b]/95 dark:to-[#141d1b]/80">
+    <footer class="composer-footer sticky bottom-0 z-30 border-t border-sand-200/80 bg-gradient-to-t from-white via-white/95 to-white/80 px-4 pt-3 backdrop-blur-md dark:border-white/5 dark:from-[#141d1b] dark:via-[#141d1b]/95 dark:to-[#141d1b]/80">
       <form class="w-full" id="composer">
         <div class="flex items-end gap-2.5 rounded-2xl border border-sand-200 bg-sand-50/60 p-2.5 shadow-sm transition-all focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-600/15 dark:border-white/10 dark:bg-white/5">
           <textarea class="max-h-36 flex-1 resize-none overflow-y-auto border-0 bg-transparent py-1.5 text-[15px] leading-relaxed text-brand-950 placeholder:text-brand-400 focus:outline-none dark:text-sand-100 dark:placeholder:text-sand-500" id="input" placeholder="Type instead of speaking..." rows="1"></textarea>

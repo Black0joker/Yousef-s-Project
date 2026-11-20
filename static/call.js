@@ -24,6 +24,7 @@
       speaking: "Speaking...",
       muted: "Microphone muted.",
       ended: "Call ended.",
+      logout: "log out",
       placeholder: "Type instead of speaking...",
       you: "You",
       sage: "SAGE",
@@ -56,6 +57,7 @@
       speaking: "أتحدث...",
       muted: "الميكروفون مكتوم.",
       ended: "انتهت المكالمة.",
+      logout: "تسجيل الخروج",
       placeholder: "اكتب بدلًا من التحدث...",
       you: "أنت",
       sage: "SAGE",
@@ -114,6 +116,7 @@
   var greetingEl = document.getElementById("greeting");
   var avatarEl = document.getElementById("avatar");
   var logoutBtn = document.getElementById("logout");
+  var logoutLabel = document.getElementById("logout-label") || logoutBtn;
   var langToggle = document.getElementById("lang-toggle");
   var langLabel = document.getElementById("lang-label");
   var startBtn = document.getElementById("start-call");
@@ -209,6 +212,7 @@
     hangupLabel.textContent = str().hangup;
     micLabel.textContent = micBtn.getAttribute("aria-pressed") === "true" ? str().mute : str().unmute;    input.setAttribute("placeholder", str().placeholder);
     callBadge.textContent = str().badge;
+    logoutLabel.textContent = str().logout;
     if (langLabel) langLabel.textContent = str().code;
     if (!active) callStatus.textContent = str().ready;
     renderVoiceBanner();
